@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fock regression test suite — Nock opcodes 0-10 + SLOT
+# Fock regression test suite — Nock opcodes 0-11 + SLOT
 # Usage: ./tests/run_tests.sh [--verbose]
 #
 # Each test feeds one Forth expression to the REPL and checks the hex
@@ -205,6 +205,26 @@ T "op10: edit axis 3 (tail)"    "0000000000000063" \
 #   → [hax(2, 99, [1 2])  3] = [[99 2] 3]
 T "op10: deep edit axis 4"      "0000000000000063" \
     "1 2 C>N 3 N>N CONS  10 N>N  4 N>N 1 N>N 99 N>N CONS CONS  0 N>N 1 N>N CONS  CONS  CONS  NOCK CAR CAR NOUN> ."
+
+# ── Op 11: hints ──────────────────────────────────────────────────────────
+# Static hint: *[42 [11 7 [0 1]]] = *[42 [0 1]] = 42  (atom tag discarded)
+T "op11: static hint"           "000000000000002A" \
+    "42 N>N  11 N>N 7 N>N 0 N>N 1 N>N CONS CONS CONS  NOCK NOUN> ."
+# Static hint with lus: *[5 [11 99 [4 [0 1]]]] = 6
+T "op11: static hint+lus"       "0000000000000006" \
+    "5 N>N  11 N>N 99 N>N 4 N>N 0 N>N 1 N>N CONS CONS CONS CONS  NOCK NOUN> ."
+# Dynamic hint, unrecognized tag: *[42 [11 [42 [0 1]] [4 [0 1]]]] = +42 = 43
+# tag=42, clue=slot(1,42)=42, d=[4 [0 1]], result=43
+T "op11: dynamic noop hint"     "000000000000002B" \
+    "42 N>N  11 N>N  42 N>N 0 N>N 1 N>N CONS CONS  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS  NOCK NOUN> ."
+# %slog hint: result is d's value regardless of slog side-effect
+# *[7 [11 [%slog [0 1]] [4 [0 1]]]] = 8  (slog prints 7 to UART)
+T "op11: %slog returns d"       "0000000000000008" \
+    "7 N>N  11 N>N  1735355507 N>N 0 N>N 1 N>N CONS CONS  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS  NOCK NOUN> ."
+# %xray hint: result is d's value regardless of xray side-effect
+# *[9 [11 [%xray [0 1]] [4 [0 1]]]] = 10  (%xray cord = 2036429432)
+T "op11: %xray returns d"       "000000000000000A" \
+    "9 N>N  11 N>N  2036429432 N>N 0 N>N 1 N>N CONS CONS  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS  NOCK NOUN> ."
 
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"

@@ -9,7 +9,116 @@ static void nock_crash(const char *msg) {
     uart_puts("\r\nnock crash: ");
     uart_puts(msg);
     uart_puts("\r\n");
-    for (;;) {}     /* halt — Phase 3b will longjmp to QUIT instead */
+    for (;;) {}     /* halt — Phase 3c will longjmp to QUIT instead */
+}
+
+/* ── Noun printer (%slog, %xray) ─────────────────────────────────────────── */
+
+static void uart_hex64(uint64_t v) {
+    char buf[17];
+    buf[16] = '\0';
+    for (int i = 15; i >= 0; i--) {
+        buf[i] = "0123456789abcdef"[v & 0xF];
+        v >>= 4;
+    }
+    uart_puts(buf);
+}
+
+#define NOUN_PRINT_DEPTH_MAX 12
+
+static void noun_print(noun n, int depth) {
+    if (depth > NOUN_PRINT_DEPTH_MAX) { uart_puts("..."); return; }
+    if (noun_is_atom(n)) {
+        if (noun_is_direct(n))
+            uart_hex64(direct_val(n));
+        else
+            uart_puts("<bignum>");
+        return;
+    }
+    cell_t *c = (cell_t *)(uintptr_t)cell_ptr(n);
+    uart_puts("[");
+    noun_print(c->head, depth + 1);
+    uart_puts(" ");
+    noun_print(c->tail, depth + 1);
+    uart_puts("]");
+}
+
+/* ── Hint tag constants (Urbit cord encoding: LSB = first char) ──────────── */
+
+#define HINT_WILD  0x646C6977ULL   /* %wild */
+#define HINT_SLOG  0x676F6C73ULL   /* %slog */
+#define HINT_XRAY  0x79617278ULL   /* %xray */
+#define HINT_MEAN  0x6E61656DULL   /* %mean */
+#define HINT_MEMO  0x6F6D656DULL   /* %memo */
+#define HINT_BOUT  0x74756F62ULL   /* %bout */
+
+/* ── Wilt parsing ────────────────────────────────────────────────────────── */
+
+/*
+ * Parse a $wilt noun (Hoon list of [label sock] pairs) into a wilt_t.
+ * A Hoon list is either 0 (null) or [[head tail_of_pair] rest].
+ *   element = [label [cape data]]
+ */
+static void parse_wilt(noun wilt_noun, wilt_t *out) {
+    out->len = 0;
+    while (noun_is_cell(wilt_noun) && out->len < WILT_MAX) {
+        cell_t *cons  = (cell_t *)(uintptr_t)cell_ptr(wilt_noun);
+        noun    elem  = cons->head;
+        wilt_noun     = cons->tail;
+
+        if (!noun_is_cell(elem)) continue;          /* malformed — skip */
+        cell_t *ep    = (cell_t *)(uintptr_t)cell_ptr(elem);
+        noun    label = ep->head;
+        noun    sock  = ep->tail;                   /* [cape data] */
+
+        if (!noun_is_cell(sock)) continue;          /* malformed — skip */
+        cell_t *sp    = (cell_t *)(uintptr_t)cell_ptr(sock);
+
+        out->e[out->len].label     = label;
+        out->e[out->len].sock.cape = sp->head;
+        out->e[out->len].sock.data = sp->tail;
+        out->len++;
+    }
+}
+
+/* ── Sock matching ────────────────────────────────────────────────────────── */
+
+/*
+ * Does (cape, data) match subject?
+ *   cape == NOUN_YES (0) → exact: data must equal subject
+ *   cape == NOUN_NO  (1) → wildcard: always matches
+ *   cape is cell         → recurse into head and tail
+ */
+static int sock_match(noun cape, noun data, noun subject) {
+    if (noun_is_atom(cape)) {
+        if (direct_val(cape) == 0)      /* & — exact match */
+            return noun_eq(data, subject);
+        return 1;                       /* | — wildcard */
+    }
+    if (!noun_is_cell(subject)) return 0;   /* structural mismatch */
+    cell_t *cc = (cell_t *)(uintptr_t)cell_ptr(cape);
+    cell_t *dc = (cell_t *)(uintptr_t)cell_ptr(data);
+    cell_t *sc = (cell_t *)(uintptr_t)cell_ptr(subject);
+    return sock_match(cc->head, dc->head, sc->head)
+        && sock_match(cc->tail, dc->tail, sc->tail);
+}
+
+/* ── Hot state (Phase 11d: populated with real jets) ─────────────────────── */
+
+typedef struct { uint64_t label_cord; jet_fn_t fn; } hot_entry_t;
+
+static const hot_entry_t hot_state[] = {
+    { 0, NULL }     /* sentinel — no jets yet */
+};
+
+static jet_fn_t hot_lookup(noun label) {
+    if (!noun_is_direct(label)) return NULL;
+    uint64_t cord = direct_val(label);
+    for (int i = 0; hot_state[i].fn != NULL; i++) {
+        if (hot_state[i].label_cord == cord)
+            return hot_state[i].fn;
+    }
+    return NULL;
 }
 
 /* ── Hax  (#[axis val target]) ──────────────────────────────────────────── */
@@ -94,7 +203,18 @@ noun slot(noun axis, noun subject) {
 
 /* ── Nock eval ───────────────────────────────────────────────────────────── */
 
-noun nock(noun subject, noun formula) {
+/*
+ * Internal evaluator.  All recursive calls go through here so that
+ * `jets` and `sky` are threaded through the entire computation.
+ *
+ * `wild_buf` holds at most one %wild registration set per stack frame.
+ * When op 11 fires a %wild hint, we parse the clue into `wild_buf` and
+ * update `jets` to point to it.  Because `goto loop` keeps us in the
+ * same frame, `wild_buf` stays live until the frame returns.
+ */
+static noun nock_eval(noun subject, noun formula,
+                      const wilt_t *jets, sky_fn_t sky) {
+    wilt_t wild_buf;    /* local %wild registration buffer */
 loop:
     if (!noun_is_cell(formula))
         nock_crash("nock atom");
@@ -105,8 +225,8 @@ loop:
 
     /* ── Distribution rule: *[a [b c] d] = [*[a b c] *[a d]] ── */
     if (noun_is_cell(head)) {
-        noun left  = nock(subject, head);
-        noun right = nock(subject, tail);
+        noun left  = nock_eval(subject, head, jets, sky);
+        noun right = nock_eval(subject, tail, jets, sky);
         return alloc_cell(left, right);
     }
 
@@ -130,8 +250,8 @@ loop:
         if (!noun_is_cell(tail))
             nock_crash("op2 tail not cell");
         cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
-        noun new_subj = nock(subject, args->head);
-        noun new_form = nock(subject, args->tail); /* still old subject */
+        noun new_subj = nock_eval(subject, args->head, jets, sky);
+        noun new_form = nock_eval(subject, args->tail, jets, sky);
         subject = new_subj;
         formula = new_form;
         goto loop;
@@ -139,13 +259,13 @@ loop:
 
     /* ── 3  *[a 3 b]  =  ?*[a b]  (wut: 0=cell, 1=atom) ── */
     case 3: {
-        noun r = nock(subject, tail);
+        noun r = nock_eval(subject, tail, jets, sky);
         return noun_is_cell(r) ? NOUN_YES : NOUN_NO;
     }
 
     /* ── 4  *[a 4 b]  =  +*[a b]  (lus: increment atom) ── */
     case 4: {
-        noun r = nock(subject, tail);
+        noun r = nock_eval(subject, tail, jets, sky);
         if (!noun_is_direct(r))
             nock_crash("op4 increment non-direct (bignum NYI)");
         return direct(direct_val(r) + 1);
@@ -156,8 +276,8 @@ loop:
         if (!noun_is_cell(tail))
             nock_crash("op5 tail not cell");
         cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
-        noun left  = nock(subject, args->head);
-        noun right = nock(subject, args->tail);
+        noun left  = nock_eval(subject, args->head, jets, sky);
+        noun right = nock_eval(subject, args->tail, jets, sky);
         return noun_eq(left, right) ? NOUN_YES : NOUN_NO;
     }
 
@@ -166,15 +286,31 @@ loop:
      * Evaluate c against subject to get a core, pull the arm formula
      * at axis b, then evaluate that arm with the core as its own subject.
      * This is every function call in Hoon.
+     *
+     * Before falling through to Nock eval, check the active %wild
+     * registrations: if any sock matches the core, dispatch to the jet.
      */
     case 9: {
         if (!noun_is_cell(tail))
             nock_crash("op9 tail not cell");
         cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
-        noun b    = args->head;         /* arm axis */
-        noun core = nock(subject, args->tail); /* evaluate core expression */
-        noun arm  = slot(b, core);      /* pull arm formula from core */
-        subject = core;                 /* core is its own subject */
+        noun b    = args->head;
+        noun core = nock_eval(subject, args->tail, jets, sky);
+        noun arm  = slot(b, core);
+
+        /* ── Jet dispatch ── */
+        if (jets != NULL) {
+            for (int i = 0; i < jets->len; i++) {
+                if (sock_match(jets->e[i].sock.cape,
+                               jets->e[i].sock.data, core)) {
+                    jet_fn_t fn = hot_lookup(jets->e[i].label);
+                    if (fn != NULL)
+                        return fn(core, jets, sky);
+                }
+            }
+        }
+
+        subject = core;
         formula = arm;
         goto loop;                      /* TCO */
     }
@@ -188,7 +324,7 @@ loop:
         if (!noun_is_cell(args->tail))
             nock_crash("op6 missing branches");
         cell_t *branches = (cell_t *)(uintptr_t)cell_ptr(args->tail);
-        noun cond = nock(subject, b);
+        noun cond = nock_eval(subject, b, jets, sky);
         if (noun_eq(cond, NOUN_YES)) {
             formula = branches->head;           /* then-branch c */
             goto loop;
@@ -206,7 +342,7 @@ loop:
         if (!noun_is_cell(tail))
             nock_crash("op7 tail not cell");
         cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
-        subject = nock(subject, args->head);
+        subject = nock_eval(subject, args->head, jets, sky);
         formula = args->tail;
         goto loop;
     }
@@ -216,7 +352,7 @@ loop:
         if (!noun_is_cell(tail))
             nock_crash("op8 tail not cell");
         cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
-        noun pinned = nock(subject, args->head);
+        noun pinned = nock_eval(subject, args->head, jets, sky);
         subject = alloc_cell(pinned, subject);  /* [*[a b] a] */
         formula = args->tail;
         goto loop;
@@ -235,23 +371,103 @@ loop:
         noun d    = args->tail;
 
         if (noun_is_cell(hint)) {
-            /* dynamic: hint = [b c]; edit target at axis b with *[a c] */
             cell_t *hc = (cell_t *)(uintptr_t)cell_ptr(hint);
             noun b = hc->head;
             if (!noun_is_direct(b))
                 nock_crash("op10 edit axis not direct");
-            noun val    = nock(subject, hc->tail);   /* *[a c] */
-            noun target = nock(subject, d);           /* *[a d] */
+            noun val    = nock_eval(subject, hc->tail, jets, sky);
+            noun target = nock_eval(subject, d, jets, sky);
             return hax(direct_val(b), val, target);
         } else {
-            /* static hint: just evaluate d, drop hint atom b */
             formula = d;
             goto loop;
         }
+    }
+
+    /* ── 11  hint ──────────────────────────────────────────────────────────
+     *
+     *  *[a 11 b c]       =  *[a c]                (static hint, b is atom)
+     *  *[a 11 [b c] d]   =  hint fires, then *[a d]  (dynamic hint)
+     *
+     * Supported dynamic hint tags:
+     *   %wild  — parse $wilt clue, scope jet registrations into *[a d]
+     *   %slog  — print clue noun to UART (bare-metal printf)
+     *   %xray  — print clue noun tree to UART (noun inspector)
+     *   %mean  — stub (stack trace, Phase 7)
+     *   %memo  — stub (memoization, Phase 5)
+     *   %bout  — stub (timing, future)
+     *   other  — silent no-op
+     */
+    case 11: {
+        if (!noun_is_cell(tail))
+            nock_crash("op11 tail not cell");
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        noun hint = args->head;
+        noun d    = args->tail;
+
+        if (!noun_is_cell(hint)) {
+            /* Static hint: atom tag, no clue evaluation — just eval d */
+            formula = d;
+            goto loop;
+        }
+
+        /* Dynamic hint: hint = [b c] */
+        cell_t *hc  = (cell_t *)(uintptr_t)cell_ptr(hint);
+        noun b      = hc->head;     /* hint tag */
+        noun c      = hc->tail;     /* clue formula */
+
+        if (!noun_is_direct(b))
+            nock_crash("op11 hint tag not direct");
+        uint64_t tag = direct_val(b);
+
+        /* Evaluate clue (for side effects and/or %wild registration) */
+        noun clue = nock_eval(subject, c, jets, sky);
+
+        switch (tag) {
+
+        case HINT_WILD:
+            /* Parse $wilt clue into wild_buf; scope registrations into d */
+            parse_wilt(clue, &wild_buf);
+            jets = &wild_buf;
+            break;
+
+        case HINT_SLOG:
+            uart_puts("\r\nslog: ");
+            noun_print(clue, 0);
+            uart_puts("\r\n");
+            break;
+
+        case HINT_XRAY:
+            uart_puts("\r\nxray: ");
+            noun_print(clue, 0);
+            uart_puts("\r\n");
+            break;
+
+        case HINT_MEAN:
+        case HINT_MEMO:
+        case HINT_BOUT:
+        default:
+            /* stub / no-op */
+            (void)clue;
+            break;
+        }
+
+        formula = d;
+        goto loop;
     }
 
     default:
         nock_crash("unimplemented opcode");
         return NOUN_ZERO; /* unreachable */
     }
+}
+
+/* ── Public API ──────────────────────────────────────────────────────────── */
+
+noun nock(noun subject, noun formula) {
+    return nock_eval(subject, formula, NULL, NULL);
+}
+
+noun nock_ex(noun subject, noun formula, const wilt_t *jets, sky_fn_t sky) {
+    return nock_eval(subject, formula, jets, sky);
 }

@@ -209,18 +209,53 @@ causing it to loop back into QUIT.
 - All TCO opcodes (2, 6, 7, 8, 9, 10-static) use `goto loop` — zero stack growth.
 - `hax(a, val, target)`: recursive tree edit, mirrors `slot` path-bit traversal.
 - Opcode 10: static hint (atom b → TCO eval d), dynamic/tree-edit ([b c] → hax(b, *[a c], *[a d])).
-- Crash behaviour: `nock_crash()` prints to UART and halts; longjmp recovery is Phase 3b.
+- Crash behaviour: `nock_crash()` prints to UART and halts; longjmp recovery is Phase 3c.
 - Forth words: `SLOT ( axis noun -- result )`, `NOCK ( subject formula -- product )`.
-- Regression test suite: `tests/run_tests.sh` — 54 tests, all passing (ops 0–10 + SLOT + distribution rule).
-- Next: opcode 11 (hint dispatch + `%wild` jet registration).
+
+**Phase 3b: COMPLETE (op 11 + hint infrastructure)**
+- Evaluator widened to `nock_eval(subject, formula, const wilt_t *jets, sky_fn_t sky)` (internal static).
+- Public shims: `nock(s,f)` → `nock_eval(s,f,NULL,NULL)`; `nock_ex(s,f,jets,sky)` exposes full API.
+- `src/nock.h` now exports: `sky_fn_t`, `sock_t`, `wilt_t` (WILT_MAX=16), `wilt_entry_t`, `jet_fn_t`.
+- Hint tag constants (Urbit cord encoding, LSB = first char):
+  `%wild`=0x646C6977, `%slog`=0x676F6C73, `%xray`=0x79617278, `%mean`=0x6E61656D, etc.
+- Op 11 static hint: TCO eval d, discard atom tag.
+- Op 11 dynamic hint dispatch:
+  - `%wild` — `parse_wilt()` parses `$wilt` clue noun into `wild_buf` (local frame); `jets = &wild_buf`.
+  - `%slog` — `uart_puts` + `noun_print()` to UART (bare-metal printf).
+  - `%xray` — `noun_print()` recursive noun tree dump to UART (bare-metal noun inspector).
+  - `%mean`, `%memo`, `%bout` — silent stubs; correct to no-op per spec.
+  - unknown tags — silent no-op.
+- `noun_print(noun, depth)`: recursive noun tree printer; depth-limited at 12; direct atoms as hex.
+- `sock_match(cape, data, subject)`: structural pattern match per `$cape`/`$sock` spec.
+- `parse_wilt(noun, wilt_t*)`: parses Hoon list of `[label [cape data]]` pairs.
+- Hot state: `hot_state[]` array with sentinel; `hot_lookup(label)` → `jet_fn_t`. Empty until Phase 11d.
+- Op 9 now checks `jets` before TCO: scans wilt for matching sock, calls jet if found.
+- UART backspace fix: BS/DEL now sends `\b \b` erase sequence; echo moved after character classification
+  in both `REFILL` and the inline QUIT input loop.
+- Regression test suite: `tests/run_tests.sh` — 59 tests, all passing (ops 0–11 + SLOT + distribution rule).
+- Note: Forth hex literals (`0x...`) are not supported by the REPL (BASE=10). Use decimal cord values in tests.
 
 ## Immediate Tasks for This Agent
 
-1. Create `src/noun.h` — tag constants and pack/unpack macros for all four noun types.
-2. Create `src/noun.c` — `alloc_cell()`, `cell_inc()`, `cell_dec()`,
-   `alloc_indirect()` for type-10 atoms (hash field zeroed initially).
-3. Add Forth words (in `src/forth.s`): `CONS`, `CAR`, `CDR`, `ATOM?`, `CELL?`, `=noun`.
-4. Smoke-test via REPL: `1 2 CONS CDR .` etc.
+- Phase 11c: populate `hot_state[]` with first real jets (`dec`, `add` as C functions).
+- Phase 11d: Forth words `.JETS` (print dashboard), `.WILT` (print active registrations), jet hit counters.
+- Phase 3c: longjmp-based crash recovery (back to QUIT loop) instead of halt.
+- Phase 4: bignum atoms.
+
+## Future: Nock Evaluator in Forth (Phase 5+)
+
+The Nock evaluator currently lives in C (`src/nock.c`) and is called from Forth via `bl nock`.
+Moving it to Forth is possible and aligns with the project thesis:
+
+- The opcode switch becomes a dispatch table of execution tokens indexed by opcode.
+- `goto loop` TCO becomes `BEGIN ... AGAIN` with `EXIT` for early returns — more natural in Forth.
+- Jets would then be ordinary Forth dictionary entries installed at runtime from the REPL, with no
+  C recompilation or reflash required.
+- **The Forth dictionary IS the jet dashboard** — a jet is just a word with the right name.
+- C stays for: allocator (`noun.c`), UART, and performance-critical jets.
+- Only the *dispatch logic* moves to Forth.
+
+Do this after Phase 5, once jets are proven out and the evaluator is mostly bypassed for production code.
 
 ## Noun Representation
 
@@ -437,7 +472,8 @@ Nock that emits `%fast` hints, we silently ignore them (correct: `%fast` is pure
 | 1 | Forth kernel: inner interpreter + REPL + control flow | DONE |
 | 2 | Noun heap: tagged pointers, cell alloc, refcount | DONE |
 | 3 | Nock 4K eval loop (opcodes 0–10, TCO, `hax`) | DONE |
-| 3b | `%wild` + hint dispatch + op 11 + jet infrastructure | IN PROGRESS |
+| 3b | Op 11 + hint dispatch (`%wild`, `%slog`, `%xray`) + jet infrastructure | DONE |
+| 3c | longjmp crash recovery (back to QUIT instead of halt) | TODO |
 | 4 | Bignum atoms | TODO |
 | 4b | BLAKE3 implementation + hash_atom() + intern() | TODO |
 | 5 | SKA: symbolic partial eval, annotated Nock, compile-time jet matching | TODO |
