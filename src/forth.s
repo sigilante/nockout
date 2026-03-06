@@ -883,35 +883,56 @@ defcode "RFL", 3, refill, 0
     ldr     w2, [x0]
     and     w2, w2, #0xFF
 
-    // Echo
+    // CR/LF → done (CRLF emitted below, no echo here)
+    cmp     w2, #13
+    beq     .Lrfl_done
+    cmp     w2, #10
+    beq     .Lrfl_done
+
+    // BS/DEL → erase last char if buffer non-empty
+    cmp     w2, #8
+    beq     .Lrfl_bs
+    cmp     w2, #127
+    beq     .Lrfl_bs
+
+    // Normal char: echo then store (if buffer not full)
+    cmp     x6, #(TIB_SIZE - 1)
+    bge     .Lrfl_loop
     ldr     x0, =UART_FR
 .Lrfl_echo:
     ldr     w3, [x0]
     tbnz    w3, #5, .Lrfl_echo
     ldr     x0, =UART_DR
     str     w2, [x0]
-
-    cmp     w2, #13
-    beq     .Lrfl_done
-    cmp     w2, #10
-    beq     .Lrfl_done
-
-    // Backspace
-    cmp     w2, #8
-    beq     .Lrfl_bs
-    cmp     w2, #127
-    beq     .Lrfl_bs
-
-    // Store char (if buffer not full)
-    cmp     x6, #(TIB_SIZE - 1)
-    bge     .Lrfl_loop
     strb    w2, [x5, x6]
     add     x6, x6, #1
     b       .Lrfl_loop
 
 .Lrfl_bs:
-    cbz     x6, .Lrfl_loop
+    cbz     x6, .Lrfl_loop             // nothing to erase
     sub     x6, x6, #1
+    // Send \b \b  (move back, overwrite with space, move back)
+    ldr     x0, =UART_FR
+.Lrfl_bs1:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lrfl_bs1
+    ldr     x0, =UART_DR
+    mov     w1, #8
+    str     w1, [x0]
+    ldr     x0, =UART_FR
+.Lrfl_bs2:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lrfl_bs2
+    ldr     x0, =UART_DR
+    mov     w1, #32
+    str     w1, [x0]
+    ldr     x0, =UART_FR
+.Lrfl_bs3:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lrfl_bs3
+    ldr     x0, =UART_DR
+    mov     w1, #8
+    str     w1, [x0]
     b       .Lrfl_loop
 
 .Lrfl_done:
@@ -1526,29 +1547,53 @@ defcode "QUIT", 4, quit, 0
     ldr     x0, =UART_DR
     ldr     w2, [x0]
     and     w2, w2, #0xFF
-    // Echo
+    // CR/LF → end of line (no echo; CRLF emitted below)
+    cmp     w2, #13
+    beq     .Lq_eol
+    cmp     w2, #10
+    beq     .Lq_eol
+    // BS/DEL → erase last char if buffer non-empty
+    cmp     w2, #8
+    beq     .Lq_bs
+    cmp     w2, #127
+    beq     .Lq_bs
+    // Normal char: echo then store (if buffer not full)
+    cmp     x6, #(TIB_SIZE - 1)
+    bge     .Lq_rxloop
     ldr     x0, =UART_FR
 .Lq_txwait:
     ldr     w3, [x0]
     tbnz    w3, #5, .Lq_txwait
     ldr     x0, =UART_DR
     str     w2, [x0]
-    cmp     w2, #13
-    beq     .Lq_eol
-    cmp     w2, #10
-    beq     .Lq_eol
-    cmp     w2, #8
-    beq     .Lq_bs
-    cmp     w2, #127
-    beq     .Lq_bs
-    cmp     x6, #(TIB_SIZE - 1)
-    bge     .Lq_rxloop
     strb    w2, [x5, x6]
     add     x6, x6, #1
     b       .Lq_rxloop
 .Lq_bs:
-    cbz     x6, .Lq_rxloop
+    cbz     x6, .Lq_rxloop             // nothing to erase
     sub     x6, x6, #1
+    // Send \b \b  (move back, overwrite with space, move back)
+    ldr     x0, =UART_FR
+.Lq_bs1:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lq_bs1
+    ldr     x0, =UART_DR
+    mov     w1, #8
+    str     w1, [x0]
+    ldr     x0, =UART_FR
+.Lq_bs2:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lq_bs2
+    ldr     x0, =UART_DR
+    mov     w1, #32
+    str     w1, [x0]
+    ldr     x0, =UART_FR
+.Lq_bs3:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lq_bs3
+    ldr     x0, =UART_DR
+    mov     w1, #8
+    str     w1, [x0]
     b       .Lq_rxloop
 .Lq_eol:
     // Emit CRLF
