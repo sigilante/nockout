@@ -13,7 +13,7 @@ CFLAGS  = -Wall -O2 -ffreestanding -nostdlib -nostartfiles \
           -I$(SRCDIR)
 LDFLAGS = -T $(SRCDIR)/linker.ld -nostdlib
 
-OBJS    = boot.o uart.o main.o
+OBJS    = boot.o uart.o forth.o main.o
 
 all: $(TARGET).img
 

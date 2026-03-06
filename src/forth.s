@@ -1,0 +1,1573 @@
+// src/forth.s
+// Fock Forth Kernel — AArch64 bare metal
+// Phase 1: Inner interpreter + primitives + QUIT loop
+//
+// ── Register assignments ─────────────────────────────────────────────────────
+//   x27  IP  — Instruction Pointer: next cell to fetch from word list
+//   x26  DSP — Data Stack Pointer: points TO top item, grows DOWN
+//   x25  RSP — Return Stack Pointer: points TO top item, grows DOWN
+//   x24  W   — Working register: current dictionary entry address
+//
+//   x0-x18   — scratch, any word may clobber
+//   x19-x23  — reserved for noun heap pointers (Phase 2+)
+//   x24-x27  — RESERVED, never clobber
+//
+// Stack convention: DSP/RSP point TO the top item.
+//   Push: str x0, [DSP, #-8]!     (pre-decrement then store)
+//   Pop:  ldr x0, [DSP], #8       (load then post-increment)
+//
+// ── Dictionary entry layout ──────────────────────────────────────────────────
+//   offset  0 : link      [8 bytes] — address of previous entry (0 = end)
+//   offset  8 : flags|len [8 bytes] — low byte = name length, high bits = flags
+//   offset 16 : name      [8 bytes] — ASCII name, zero-padded to 8 bytes
+//   offset 24 : codeword  [8 bytes] — pointer to machine code
+//   offset 32 : body               — colon def: list of entry addrs
+//                                    DOCON: the constant value
+//                                    DOVAR: the variable storage cell
+//
+// ── Memory map (must match memory.h) ─────────────────────────────────────────
+
+.set DICT_BASE,    0x00090000
+.set DSTACK_TOP,   0x00480000
+.set RSTACK_TOP,   0x00490000
+.set TIB_BASE,     0x00089000
+.set TIB_SIZE,     256
+
+// ── UART (PL011) ─────────────────────────────────────────────────────────────
+
+.set UART_DR,   0x3F201000
+.set UART_FR,   0x3F201018
+
+// ── Register aliases ─────────────────────────────────────────────────────────
+
+IP  .req x27
+DSP .req x26
+RSP .req x25
+W   .req x24
+
+// ── Flag bits ────────────────────────────────────────────────────────────────
+
+.set F_IMMEDIATE, 0x80
+.set F_HIDDEN,    0x40
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MACROS
+// ═════════════════════════════════════════════════════════════════════════════
+
+// NEXT — fetch next word, advance IP, dispatch via codeword.
+.macro NEXT
+    ldr     W, [IP], #8         // W = *IP (entry addr),  IP += 8
+    ldr     x0, [W, #24]        // x0 = codeword at entry+24
+    br      x0                  // jump to codeword
+.endm
+
+// Link chain — updated by each defword.
+.set link, 0
+
+// defword — emit the dictionary header only.
+.macro defword name, len, label, flags
+    .section .rodata
+    .balign 8
+    .global word_\label
+word_\label:
+    .quad   link
+    .set    link, word_\label
+    .quad   ((\flags) << 8) | (\len)
+    .ascii  "\name"
+    .balign 8, 0
+    // codeword at +24, body at +32
+.endm
+
+// defcode — primitive; codeword points to immediately following asm.
+.macro defcode name, len, label, flags
+    defword "\name", \len, \label, \flags
+    .quad   code_\label
+    .text
+    .balign 4
+code_\label:
+.endm
+
+// defvar — variable; codeword = DOVAR, body = one storage cell.
+.macro defvar name, len, label, flags, initial=0
+    defword "\name", \len, \label, \flags
+    .quad   DOVAR
+    .quad   \initial
+.endm
+
+// defconst — constant; codeword = DOCON, body = value.
+.macro defconst name, len, label, flags, value
+    defword "\name", \len, \label, \flags
+    .quad   DOCON
+    .quad   \value
+.endm
+
+// ═════════════════════════════════════════════════════════════════════════════
+// INNER INTERPRETER
+// ═════════════════════════════════════════════════════════════════════════════
+
+    .text
+    .balign 4
+
+// DOCOL — enter a colon definition.
+// W holds the entry address. Push IP, set IP = body (W+32), dispatch.
+    .global DOCOL
+DOCOL:
+    str     IP, [RSP, #-8]!
+    add     IP, W, #32
+    NEXT
+
+// DOCON — push constant value stored at W+32.
+    .global DOCON
+DOCON:
+    ldr     x0, [W, #32]
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// DOVAR — push address of storage cell at W+32.
+    .global DOVAR
+DOVAR:
+    add     x0, W, #32
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// EXIT — leave a colon definition. Pop saved IP, resume caller.
+defcode "EXIT", 4, exit, 0
+    ldr     IP, [RSP], #8
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STACK PRIMITIVES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// DROP ( a -- )
+defcode "DROP", 4, drop, 0
+    ldr     x0, [DSP], #8
+    NEXT
+
+// DUP ( a -- a a )
+defcode "DUP", 3, dup, 0
+    ldr     x0, [DSP]
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// SWAP ( a b -- b a )
+defcode "SWAP", 4, swap, 0
+    ldr     x0, [DSP]
+    ldr     x1, [DSP, #8]
+    str     x0, [DSP, #8]
+    str     x1, [DSP]
+    NEXT
+
+// OVER ( a b -- a b a )
+defcode "OVER", 4, over, 0
+    ldr     x0, [DSP, #8]
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// ROT ( a b c -- b c a )
+// Before: [DSP]=c [DSP+8]=b [DSP+16]=a   After: [DSP]=a [DSP+8]=c [DSP+16]=b
+defcode "ROT", 3, rot, 0
+    ldr     x0, [DSP]           // x0 = c (top)
+    ldr     x1, [DSP, #8]       // x1 = b
+    ldr     x2, [DSP, #16]      // x2 = a (deepest)
+    str     x2, [DSP]           // a → new top
+    str     x0, [DSP, #8]       // c → new middle
+    str     x1, [DSP, #16]      // b → new deep
+    NEXT
+
+// -ROT ( a b c -- c a b )
+// Before: [DSP]=c [DSP+8]=b [DSP+16]=a   After: [DSP]=b [DSP+8]=a [DSP+16]=c
+defcode "-ROT", 4, nrot, 0
+    ldr     x0, [DSP]           // x0 = c (top)
+    ldr     x1, [DSP, #8]       // x1 = b
+    ldr     x2, [DSP, #16]      // x2 = a (deepest)
+    str     x1, [DSP]           // b → new top
+    str     x2, [DSP, #8]       // a → new middle
+    str     x0, [DSP, #16]      // c → new deep
+    NEXT
+
+// NIP ( a b -- b )
+defcode "NIP", 3, nip, 0
+    ldr     x0, [DSP], #8
+    str     x0, [DSP]
+    NEXT
+
+// 2DUP ( a b -- a b a b )
+defcode "2DUP", 4, twodup, 0
+    ldr     x0, [DSP]
+    ldr     x1, [DSP, #8]
+    sub     DSP, DSP, #16
+    str     x0, [DSP]
+    str     x1, [DSP, #8]
+    NEXT
+
+// 2DROP ( a b -- )
+defcode "2DRP", 4, twodrop, 0
+    add     DSP, DSP, #16
+    NEXT
+
+// ?DUP ( a -- a a | 0 )
+defcode "?DUP", 4, qdup, 0
+    ldr     x0, [DSP]
+    cbz     x0, 1f
+    str     x0, [DSP, #-8]!
+1:  NEXT
+
+// DEPTH ( -- n )
+defcode "DPTH", 4, depth, 0
+    ldr     x0, =DSTACK_TOP
+    sub     x0, x0, DSP
+    lsr     x0, x0, #3
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ARITHMETIC PRIMITIVES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// + ( a b -- a+b )
+defcode "+", 1, plus, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    add     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// - ( a b -- a-b )
+defcode "-", 1, minus, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    sub     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// * ( a b -- a*b )
+defcode "*", 1, mul, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    mul     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// /MOD ( a b -- rem quot )
+defcode "/MOD", 4, divmod, 0
+    ldr     x0, [DSP], #8       // x0 = b (divisor)
+    ldr     x1, [DSP], #8       // x1 = a (dividend)
+    sdiv    x2, x1, x0          // x2 = quotient
+    msub    x3, x2, x0, x1      // x3 = remainder
+    str     x2, [DSP, #-8]!    // push quot (top after swap below)
+    str     x3, [DSP, #-8]!    // push rem  (top)
+    // Stack is now ( rem quot ) as expected
+    NEXT
+
+// NEGATE ( a -- -a )
+defcode "NEG", 3, negate, 0
+    ldr     x0, [DSP]
+    neg     x0, x0
+    str     x0, [DSP]
+    NEXT
+
+// ABS ( a -- |a| )
+defcode "ABS", 3, abs, 0
+    ldr     x0, [DSP]
+    cmp     x0, #0
+    cneg    x0, x0, mi
+    str     x0, [DSP]
+    NEXT
+
+// 1+ ( a -- a+1 )
+defcode "1+", 2, oneplus, 0
+    ldr     x0, [DSP]
+    add     x0, x0, #1
+    str     x0, [DSP]
+    NEXT
+
+// 1- ( a -- a-1 )
+defcode "1-", 2, oneminus, 0
+    ldr     x0, [DSP]
+    sub     x0, x0, #1
+    str     x0, [DSP]
+    NEXT
+
+// 2* ( a -- a<<1 )
+defcode "2*", 2, twostar, 0
+    ldr     x0, [DSP]
+    lsl     x0, x0, #1
+    str     x0, [DSP]
+    NEXT
+
+// 2/ ( a -- a>>1 ) arithmetic
+defcode "2/", 2, twoslash, 0
+    ldr     x0, [DSP]
+    asr     x0, x0, #1
+    str     x0, [DSP]
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COMPARISON AND LOGIC
+// ═════════════════════════════════════════════════════════════════════════════
+// Forth boolean: 0 = false, -1 (all bits set) = true.
+// CSETM sets all bits on match (gives -1), clears on no match (gives 0).
+
+// = ( a b -- flag )
+defcode "=", 1, eq, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    cmp     x0, x1
+    csetm   x0, eq
+    str     x0, [DSP]
+    NEXT
+
+// <> ( a b -- flag )
+defcode "<>", 2, neq, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    cmp     x0, x1
+    csetm   x0, ne
+    str     x0, [DSP]
+    NEXT
+
+// < ( a b -- flag ) signed
+defcode "<", 1, lt, 0
+    ldr     x0, [DSP], #8       // b
+    ldr     x1, [DSP]           // a
+    cmp     x1, x0              // a < b?
+    csetm   x0, lt
+    str     x0, [DSP]
+    NEXT
+
+// > ( a b -- flag ) signed
+defcode ">", 1, gt, 0
+    ldr     x0, [DSP], #8       // b
+    ldr     x1, [DSP]           // a
+    cmp     x1, x0              // a > b?
+    csetm   x0, gt
+    str     x0, [DSP]
+    NEXT
+
+// <= ( a b -- flag )
+defcode "<=", 2, le, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    cmp     x1, x0
+    csetm   x0, le
+    str     x0, [DSP]
+    NEXT
+
+// >= ( a b -- flag )
+defcode ">=", 2, ge, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    cmp     x1, x0
+    csetm   x0, ge
+    str     x0, [DSP]
+    NEXT
+
+// U< ( a b -- flag ) unsigned
+defcode "U<", 2, ult, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    cmp     x1, x0
+    csetm   x0, lo
+    str     x0, [DSP]
+    NEXT
+
+// 0= ( a -- flag )
+defcode "0=", 2, zeq, 0
+    ldr     x0, [DSP]
+    cmp     x0, #0
+    csetm   x0, eq
+    str     x0, [DSP]
+    NEXT
+
+// 0< ( a -- flag )
+defcode "0<", 2, zlt, 0
+    ldr     x0, [DSP]
+    cmp     x0, #0
+    csetm   x0, lt
+    str     x0, [DSP]
+    NEXT
+
+// 0> ( a -- flag )
+defcode "0>", 2, zgt, 0
+    ldr     x0, [DSP]
+    cmp     x0, #0
+    csetm   x0, gt
+    str     x0, [DSP]
+    NEXT
+
+// AND ( a b -- a&b )
+defcode "AND", 3, and, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    and     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// OR ( a b -- a|b )
+defcode "OR", 2, or, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    orr     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// XOR ( a b -- a^b )
+defcode "XOR", 3, xor, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    eor     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// INVERT ( a -- ~a )
+defcode "INV", 3, invert, 0
+    ldr     x0, [DSP]
+    mvn     x0, x0
+    str     x0, [DSP]
+    NEXT
+
+// LSHIFT ( a n -- a<<n )
+defcode "LSH", 3, lshift, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    lsl     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// RSHIFT ( a n -- a>>n ) logical
+defcode "RSH", 3, rshift, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [DSP]
+    lsr     x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MEMORY PRIMITIVES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// @ ( addr -- val )
+defcode "@", 1, fetch, 0
+    ldr     x0, [DSP]
+    ldr     x0, [x0]
+    str     x0, [DSP]
+    NEXT
+
+// ! ( val addr -- )
+defcode "!", 1, store, 0
+    ldr     x0, [DSP], #8       // addr
+    ldr     x1, [DSP], #8       // val
+    str     x1, [x0]
+    NEXT
+
+// +! ( n addr -- )
+defcode "+!", 2, plusstore, 0
+    ldr     x0, [DSP], #8       // addr
+    ldr     x1, [DSP], #8       // n
+    ldr     x2, [x0]
+    add     x2, x2, x1
+    str     x2, [x0]
+    NEXT
+
+// C@ ( addr -- char )
+defcode "C@", 2, cfetch, 0
+    ldr     x0, [DSP]
+    ldrb    w0, [x0]
+    str     x0, [DSP]
+    NEXT
+
+// C! ( char addr -- )
+defcode "C!", 2, cstore, 0
+    ldr     x0, [DSP], #8       // addr
+    ldr     x1, [DSP], #8       // char
+    strb    w1, [x0]
+    NEXT
+
+// CELL+ ( addr -- addr+8 )
+defcode "CEL+", 4, cellplus, 0
+    ldr     x0, [DSP]
+    add     x0, x0, #8
+    str     x0, [DSP]
+    NEXT
+
+// CELLS ( n -- n*8 )
+defcode "CELL", 4, cells, 0
+    ldr     x0, [DSP]
+    lsl     x0, x0, #3
+    str     x0, [DSP]
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RETURN STACK PRIMITIVES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// >R ( a -- ) R( -- a )
+defcode ">R", 2, tor, 0
+    ldr     x0, [DSP], #8
+    str     x0, [RSP, #-8]!
+    NEXT
+
+// R> ( -- a ) R( a -- )
+defcode "R>", 2, fromr, 0
+    ldr     x0, [RSP], #8
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// R@ ( -- a ) R( a -- a )
+defcode "R@", 2, rfetch, 0
+    ldr     x0, [RSP]
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// RDROP ( -- ) R( a -- )
+defcode "RDP", 3, rdrop, 0
+    add     RSP, RSP, #8
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CONTROL FLOW PRIMITIVES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// LIT — push the next cell in the word stream as a literal.
+// At runtime: IP points past the opcode to the value cell.
+defcode "LIT", 3, lit, 0
+    ldr     x0, [IP], #8        // value; advance IP past it
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BRANCH — unconditional relative branch.
+// Cell after BRANCH is a signed byte offset added to IP.
+// Offset is relative to the address of the offset cell itself plus 8
+// (i.e. to the cell following the offset). So offset 0 means next word.
+defcode "BRN", 3, branch, 0
+    ldr     x0, [IP]            // load offset
+    add     IP, IP, x0          // IP += offset  (IP already past BRN cell)
+    NEXT
+
+// 0BRANCH — branch if zero (false).
+defcode "0BRN", 4, zbranch, 0
+    ldr     x0, [DSP], #8       // pop condition
+    cbnz    x0, 1f              // non-zero: don't branch
+    ldr     x0, [IP]            // zero: load offset
+    add     IP, IP, x0
+    NEXT
+1:  add     IP, IP, #8          // skip offset cell
+    NEXT
+
+// EXECUTE ( xt -- )
+defcode "EXEC", 4, execute, 0
+    ldr     W, [DSP], #8        // W = execution token (entry address)
+    ldr     x0, [W, #24]        // load codeword
+    br      x0
+
+// ═════════════════════════════════════════════════════════════════════════════
+// I/O PRIMITIVES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// KEY ( -- char )
+defcode "KEY", 3, key, 0
+1:  ldr     x0, =UART_FR
+    ldr     w1, [x0]
+    tbnz    w1, #4, 1b          // RX FIFO empty: spin
+    ldr     x0, =UART_DR
+    ldr     w0, [x0]
+    and     x0, x0, #0xFF
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// EMIT ( char -- )
+defcode "EMIT", 4, emit, 0
+    ldr     x1, [DSP], #8
+1:  ldr     x0, =UART_FR
+    ldr     w2, [x0]
+    tbnz    w2, #5, 1b          // TX FIFO full: spin
+    ldr     x0, =UART_DR
+    str     w1, [x0]
+    NEXT
+
+// CR ( -- )
+defcode "CR", 2, cr, 0
+1:  ldr     x0, =UART_FR
+    ldr     w1, [x0]
+    tbnz    w1, #5, 1b
+    ldr     x0, =UART_DR
+    mov     w1, #13
+    str     w1, [x0]
+2:  ldr     x0, =UART_FR
+    ldr     w1, [x0]
+    tbnz    w1, #5, 2b
+    ldr     x0, =UART_DR
+    mov     w1, #10
+    str     w1, [x0]
+    NEXT
+
+// SPACE ( -- )
+defcode "SPC", 3, space, 0
+1:  ldr     x0, =UART_FR
+    ldr     w1, [x0]
+    tbnz    w1, #5, 1b
+    ldr     x0, =UART_DR
+    mov     w1, #32
+    str     w1, [x0]
+    NEXT
+
+// TYPE ( addr len -- )
+defcode "TYPE", 4, type, 0
+    ldr     x2, [DSP], #8       // len
+    ldr     x1, [DSP], #8       // addr
+    cbz     x2, 2f
+1:  ldrb    w0, [x1], #1
+.Ltype_wait:
+    ldr     x3, =UART_FR
+    ldr     w4, [x3]
+    tbnz    w4, #5, .Ltype_wait
+    ldr     x3, =UART_DR
+    str     w0, [x3]
+    subs    x2, x2, #1
+    bne     1b
+2:  NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SYSTEM VARIABLES AND CONSTANTS
+// ═════════════════════════════════════════════════════════════════════════════
+
+defvar "HERE", 4, here,   0, DICT_BASE  // next free dictionary address
+defvar "LTST", 4, latest, 0, 0          // most recent entry (set in forth_main)
+defvar "STAT", 4, state,  0, 0          // 0=interpret 1=compile
+defvar "BASE", 4, base,   0, 10         // number base
+defvar ">IN",  3, toin,   0, 0          // offset into TIB
+defvar "#TIB", 4, ntib,   0, 0          // valid chars in TIB
+
+defconst "TIB",  3, tib,      0, TIB_BASE
+defconst "CEL",  3, cellsize, 0, 8
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DICTIONARY OPERATIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+// , ( val -- )   append cell to HERE, advance HERE
+defcode ",", 1, comma, 0
+    ldr     x0, [DSP], #8               // value to compile
+    ldr     x1, =word_here + 32         // address of HERE's storage
+    ldr     x1, [x1]                    // current HERE
+    str     x0, [x1]                    // store value there
+    add     x1, x1, #8
+    ldr     x2, =word_here + 32
+    str     x1, [x2]                    // update HERE
+    NEXT
+
+// C, ( char -- )   append byte to HERE, advance HERE by 1
+defcode "C,", 2, ccomma, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, =word_here + 32
+    ldr     x1, [x1]
+    strb    w0, [x1]
+    add     x1, x1, #1
+    ldr     x2, =word_here + 32
+    str     x1, [x2]
+    NEXT
+
+// ALLOT ( n -- )   advance HERE by n bytes
+defcode "ALT", 3, allot, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, =word_here + 32
+    ldr     x2, [x1]
+    add     x2, x2, x0
+    str     x2, [x1]
+    NEXT
+
+// ALIGN ( -- )   align HERE to next 8-byte boundary
+defcode "ALN", 3, align, 0
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]
+    add     x1, x1, #7
+    and     x1, x1, #~7
+    str     x1, [x0]
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WORD PARSING
+// ═════════════════════════════════════════════════════════════════════════════
+
+// WORD ( delim -- addr len )
+// Parse next delim-delimited token from TIB into a scratch buffer at HERE.
+// Does NOT advance HERE permanently. Returns addr=HERE and byte count.
+defcode "WORD", 4, word, 0
+    ldr     x7, [DSP], #8               // x7 = delimiter
+
+    ldr     x0, =word_toin + 32
+    ldr     x1, [x0]                    // x1 = >IN
+    ldr     x2, =word_ntib + 32
+    ldr     x2, [x2]                    // x2 = #TIB
+    ldr     x3, =TIB_BASE               // x3 = TIB base
+
+    // Skip leading delimiters
+.Lword_skip:
+    cmp     x1, x2
+    bge     .Lword_empty
+    ldrb    w4, [x3, x1]
+    cmp     w4, w7
+    bne     .Lword_collect
+    add     x1, x1, #1
+    b       .Lword_skip
+
+    // Collect non-delimiter chars
+.Lword_collect:
+    ldr     x5, =word_here + 32
+    ldr     x5, [x5]                    // x5 = output buffer (HERE)
+    mov     x6, #0                      // x6 = length
+
+.Lword_loop:
+    cmp     x1, x2
+    bge     .Lword_done
+    ldrb    w4, [x3, x1]
+    cmp     w4, w7
+    beq     .Lword_done
+    strb    w4, [x5, x6]
+    add     x1, x1, #1
+    add     x6, x6, #1
+    b       .Lword_loop
+
+.Lword_done:
+    ldr     x0, =word_toin + 32
+    str     x1, [x0]                    // update >IN
+    str     x5, [DSP, #-8]!            // push addr
+    str     x6, [DSP, #-8]!            // push len (top)
+    NEXT
+
+.Lword_empty:
+    ldr     x5, =word_here + 32
+    ldr     x5, [x5]
+    str     x5, [DSP, #-8]!
+    str     xzr, [DSP, #-8]!
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DICTIONARY SEARCH
+// ═════════════════════════════════════════════════════════════════════════════
+
+// FIND ( addr len -- entry | 0 )
+// Walk the dictionary chain from LATEST. Returns entry address or 0.
+// Skips hidden words. Caller checks F_IMMEDIATE bit in entry+8 if needed.
+defcode "FIND", 4, find, 0
+    ldr     x6, [DSP], #8               // x6 = len
+    ldr     x5, [DSP], #8               // x5 = string addr
+
+    ldr     x0, =word_latest + 32
+    ldr     x0, [x0]                    // x0 = start of chain
+
+.Lfind_loop:
+    cbz     x0, .Lfind_notfound
+    ldr     x1, [x0, #8]                // flags|len
+    and     x2, x1, #(F_HIDDEN << 8)
+    cbnz    x2, .Lfind_next             // hidden: skip
+    and     x2, x1, #0xFF               // name length
+    cmp     x2, x6
+    bne     .Lfind_next                 // length mismatch
+
+    // Compare characters
+    add     x3, x0, #16                 // entry name field
+    mov     x4, #0
+.Lfind_cmp:
+    cmp     x4, x6
+    bge     .Lfind_found
+    ldrb    w8, [x5, x4]
+    ldrb    w9, [x3, x4]
+    cmp     w8, w9
+    bne     .Lfind_next
+    add     x4, x4, #1
+    b       .Lfind_cmp
+
+.Lfind_found:
+    str     x0, [DSP, #-8]!
+    NEXT
+
+.Lfind_next:
+    ldr     x0, [x0]                    // follow link
+    b       .Lfind_loop
+
+.Lfind_notfound:
+    str     xzr, [DSP, #-8]!
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// NUMBER PARSING
+// ═════════════════════════════════════════════════════════════════════════════
+
+// NUMBER ( addr len -- n true | false )
+// Parse string as unsigned integer in current BASE.
+defcode "NUM", 3, number, 0
+    ldr     x6, [DSP], #8               // len
+    ldr     x5, [DSP], #8               // addr
+    cbz     x6, .Lnum_bad               // empty string
+
+    ldr     x0, =word_base + 32
+    ldr     x0, [x0]                    // x0 = BASE
+
+    // Check for leading '-'
+    ldrb    w1, [x5]
+    mov     x9, #0                      // x9 = negative flag
+    cmp     w1, #'-'
+    bne     .Lnum_start
+    mov     x9, #1
+    add     x5, x5, #1
+    sub     x6, x6, #1
+    cbz     x6, .Lnum_bad
+
+.Lnum_start:
+    mov     x3, #0                      // accumulator
+    mov     x4, #0                      // index
+
+.Lnum_loop:
+    cmp     x4, x6
+    bge     .Lnum_ok
+    ldrb    w1, [x5, x4]
+
+    // Digit conversion
+    cmp     w1, #'0'
+    blt     .Lnum_bad
+    cmp     w1, #'9'
+    ble     .Lnum_dec
+    cmp     w1, #'A'
+    blt     .Lnum_bad
+    cmp     w1, #'F'
+    ble     .Lnum_upper
+    cmp     w1, #'a'
+    blt     .Lnum_bad
+    cmp     w1, #'f'
+    bgt     .Lnum_bad
+    sub     w1, w1, #('a' - 10)
+    b       .Lnum_digit
+.Lnum_upper:
+    sub     w1, w1, #('A' - 10)
+    b       .Lnum_digit
+.Lnum_dec:
+    sub     w1, w1, #'0'
+.Lnum_digit:
+    cmp     x1, x0                      // digit >= base?
+    bge     .Lnum_bad
+    mul     x3, x3, x0
+    add     x3, x3, x1
+    add     x4, x4, #1
+    b       .Lnum_loop
+
+.Lnum_ok:
+    cbnz    x9, 1f                      // apply sign
+    b       2f
+1:  neg     x3, x3
+2:  str     x3, [DSP, #-8]!            // push number
+    mov     x0, #-1
+    str     x0, [DSP, #-8]!            // push true
+    NEXT
+
+.Lnum_bad:
+    str     xzr, [DSP, #-8]!           // push false
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// REFILL — read a line from UART into TIB
+// ═════════════════════════════════════════════════════════════════════════════
+
+defcode "RFL", 3, refill, 0
+    ldr     x5, =TIB_BASE
+    mov     x6, #0                      // char count
+
+.Lrfl_loop:
+    // Blocking UART read
+    ldr     x0, =UART_FR
+.Lrfl_rx:
+    ldr     w1, [x0]
+    tbnz    w1, #4, .Lrfl_rx           // RX FIFO empty
+    ldr     x0, =UART_DR
+    ldr     w2, [x0]
+    and     w2, w2, #0xFF
+
+    // Echo
+    ldr     x0, =UART_FR
+.Lrfl_echo:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lrfl_echo
+    ldr     x0, =UART_DR
+    str     w2, [x0]
+
+    cmp     w2, #13
+    beq     .Lrfl_done
+    cmp     w2, #10
+    beq     .Lrfl_done
+
+    // Backspace
+    cmp     w2, #8
+    beq     .Lrfl_bs
+    cmp     w2, #127
+    beq     .Lrfl_bs
+
+    // Store char (if buffer not full)
+    cmp     x6, #(TIB_SIZE - 1)
+    bge     .Lrfl_loop
+    strb    w2, [x5, x6]
+    add     x6, x6, #1
+    b       .Lrfl_loop
+
+.Lrfl_bs:
+    cbz     x6, .Lrfl_loop
+    sub     x6, x6, #1
+    b       .Lrfl_loop
+
+.Lrfl_done:
+    // Emit CRLF
+    ldr     x0, =UART_FR
+.Lrfl_cr1:
+    ldr     w1, [x0]
+    tbnz    w1, #5, .Lrfl_cr1
+    ldr     x0, =UART_DR
+    mov     w1, #13
+    str     w1, [x0]
+    ldr     x0, =UART_FR
+.Lrfl_lf1:
+    ldr     w1, [x0]
+    tbnz    w1, #5, .Lrfl_lf1
+    ldr     x0, =UART_DR
+    mov     w1, #10
+    str     w1, [x0]
+
+    // Update TIB state
+    ldr     x0, =word_ntib + 32
+    str     x6, [x0]
+    ldr     x0, =word_toin + 32
+    str     xzr, [x0]
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COMPILER PRIMITIVES
+// ═════════════════════════════════════════════════════════════════════════════
+
+// [ ( -- )   enter interpret mode (immediate)
+defcode "[", 1, lbrac, F_IMMEDIATE
+    ldr     x0, =word_state + 32
+    str     xzr, [x0]
+    NEXT
+
+// ] ( -- )   enter compile mode
+defcode "]", 1, rbrac, 0
+    ldr     x0, =word_state + 32
+    mov     x1, #1
+    str     x1, [x0]
+    NEXT
+
+// ' ( <name> -- xt )   push execution token of next parsed word
+defcode "'", 1, tick, 0
+    // Parse next space-delimited word from TIB
+    ldr     x7, =word_toin + 32
+    ldr     x1, [x7]
+    ldr     x8, =word_ntib + 32
+    ldr     x2, [x8]
+    ldr     x3, =TIB_BASE
+
+    // Skip spaces
+.Ltick_skip:
+    cmp     x1, x2
+    bge     .Ltick_none
+    ldrb    w4, [x3, x1]
+    cmp     w4, #' '
+    bne     .Ltick_col
+    add     x1, x1, #1
+    b       .Ltick_skip
+
+    // Collect word
+.Ltick_col:
+    ldr     x5, =word_here + 32
+    ldr     x5, [x5]
+    mov     x6, #0
+.Ltick_coll:
+    cmp     x1, x2
+    bge     .Ltick_done
+    ldrb    w4, [x3, x1]
+    cmp     w4, #' '
+    beq     .Ltick_done
+    strb    w4, [x5, x6]
+    add     x1, x1, #1
+    add     x6, x6, #1
+    b       .Ltick_coll
+.Ltick_done:
+    str     x1, [x7]
+
+    // FIND it
+    ldr     x0, =word_latest + 32
+    ldr     x0, [x0]
+.Ltick_find:
+    cbz     x0, .Ltick_none
+    ldr     x1, [x0, #8]
+    and     x2, x1, #0xFF
+    cmp     x2, x6
+    bne     .Ltick_next
+    add     x3, x0, #16
+    mov     x4, #0
+.Ltick_cmp:
+    cmp     x4, x6
+    bge     .Ltick_found
+    ldrb    w8, [x5, x4]
+    ldrb    w9, [x3, x4]
+    cmp     w8, w9
+    bne     .Ltick_next
+    add     x4, x4, #1
+    b       .Ltick_cmp
+.Ltick_found:
+    str     x0, [DSP, #-8]!
+    NEXT
+.Ltick_next:
+    ldr     x0, [x0]
+    ldr     x3, =TIB_BASE
+    b       .Ltick_find
+.Ltick_none:
+    str     xzr, [DSP, #-8]!
+    NEXT
+
+// IMMEDIATE ( -- )   mark the most recent definition as immediate
+defcode "IMM", 3, immediate, 0
+    ldr     x0, =word_latest + 32
+    ldr     x0, [x0]                    // current latest entry
+    ldr     x1, [x0, #8]                // flags|len
+    orr     x1, x1, #(F_IMMEDIATE << 8)
+    str     x1, [x0, #8]
+    NEXT
+
+// HIDDEN ( entry -- )   toggle hidden flag on an entry
+defcode "HID", 3, hidden, 0
+    ldr     x0, [DSP], #8
+    ldr     x1, [x0, #8]
+    eor     x1, x1, #(F_HIDDEN << 8)
+    str     x1, [x0, #8]
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DEBUG / INTROSPECTION
+// ═════════════════════════════════════════════════════════════════════════════
+
+// .S ( -- )   print stack non-destructively as hex values
+defcode ".S", 2, dots, 0
+    mov     x10, DSP
+    ldr     x11, =DSTACK_TOP
+.Ldots_loop:
+    cmp     x10, x11
+    bge     .Ldots_done
+    ldr     x0, [x10]
+    bl      printhex64
+    ldr     x1, =UART_FR
+.Ldots_sp:
+    ldr     w2, [x1]
+    tbnz    w2, #5, .Ldots_sp
+    ldr     x1, =UART_DR
+    mov     w2, #' '
+    str     w2, [x1]
+    add     x10, x10, #8
+    b       .Ldots_loop
+.Ldots_done:
+    NEXT
+
+// . ( n -- )   print top of stack as hex + space
+// Note: full decimal '.' requires bignum division (Phase 4).
+// This hex version is correct and useful for all debug purposes now.
+defcode ".", 1, dot, 0
+    ldr     x0, [DSP], #8
+    bl      printhex64
+    ldr     x1, =UART_FR
+.Ldot_sp:
+    ldr     w2, [x1]
+    tbnz    w2, #5, .Ldot_sp
+    ldr     x1, =UART_DR
+    mov     w2, #' '
+    str     w2, [x1]
+    NEXT
+
+// WORDS ( -- )   list all non-hidden dictionary entries
+defcode "WRDS", 4, words, 0
+    ldr     x0, =word_latest + 32
+    ldr     x0, [x0]
+.Lwords_loop:
+    cbz     x0, .Lwords_done
+    ldr     x1, [x0, #8]               // flags|len
+    and     x2, x1, #(F_HIDDEN << 8)
+    cbnz    x2, .Lwords_next           // hidden: skip
+    and     x2, x1, #0xFF              // name length
+    add     x3, x0, #16                // name addr
+    // TYPE the name
+    mov     x4, #0
+.Lwords_type:
+    cmp     x4, x2
+    bge     .Lwords_sp
+    ldrb    w5, [x3, x4]
+    ldr     x6, =UART_FR
+.Lwords_tw:
+    ldr     w7, [x6]
+    tbnz    w7, #5, .Lwords_tw
+    ldr     x6, =UART_DR
+    str     w5, [x6]
+    add     x4, x4, #1
+    b       .Lwords_type
+.Lwords_sp:
+    ldr     x6, =UART_FR
+.Lwords_spw:
+    ldr     w7, [x6]
+    tbnz    w7, #5, .Lwords_spw
+    ldr     x6, =UART_DR
+    mov     w7, #' '
+    str     w7, [x6]
+.Lwords_next:
+    ldr     x0, [x0]
+    b       .Lwords_loop
+.Lwords_done:
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// QUIT — the top-level interpreter loop
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// QUIT never returns. On error we jump back to .Lquit_restart.
+// Implements the standard Forth outer interpreter:
+//   loop:
+//     refill TIB
+//     for each word in TIB:
+//       find in dictionary
+//         if found and interpreting: execute
+//         if found and immediate: execute
+//         if found and compiling:  compile (append xt to HERE)
+//       not found: try as number
+//         if number and interpreting: push
+//         if number and compiling:    compile LIT + value
+//       not found and not number: error
+//
+defcode "QUIT", 4, quit, 0
+
+.Lquit_restart:
+    // Reset stacks unconditionally — this is also the ABORT target
+    ldr     DSP, =DSTACK_TOP
+    ldr     RSP, =RSTACK_TOP
+
+    // Interpret mode
+    ldr     x0, =word_state + 32
+    str     xzr, [x0]
+
+    // Print prompt
+    ldr     x0, =str_prompt
+    ldr     x1, =str_prompt_end
+    sub     x1, x1, x0
+    bl      puts_uart
+
+.Lquit_line:
+    // Read a line from UART into TIB
+    // (Inline REFILL — can't call Forth words from a primitive easily)
+    ldr     x5, =TIB_BASE
+    mov     x6, #0
+.Lq_rxloop:
+    ldr     x0, =UART_FR
+.Lq_rxwait:
+    ldr     w1, [x0]
+    tbnz    w1, #4, .Lq_rxwait
+    ldr     x0, =UART_DR
+    ldr     w2, [x0]
+    and     w2, w2, #0xFF
+    // Echo
+    ldr     x0, =UART_FR
+.Lq_txwait:
+    ldr     w3, [x0]
+    tbnz    w3, #5, .Lq_txwait
+    ldr     x0, =UART_DR
+    str     w2, [x0]
+    cmp     w2, #13
+    beq     .Lq_eol
+    cmp     w2, #10
+    beq     .Lq_eol
+    cmp     w2, #8
+    beq     .Lq_bs
+    cmp     w2, #127
+    beq     .Lq_bs
+    cmp     x6, #(TIB_SIZE - 1)
+    bge     .Lq_rxloop
+    strb    w2, [x5, x6]
+    add     x6, x6, #1
+    b       .Lq_rxloop
+.Lq_bs:
+    cbz     x6, .Lq_rxloop
+    sub     x6, x6, #1
+    b       .Lq_rxloop
+.Lq_eol:
+    // Emit CRLF
+    ldr     x0, =UART_FR
+.Lq_cr:
+    ldr     w1, [x0]
+    tbnz    w1, #5, .Lq_cr
+    ldr     x0, =UART_DR
+    mov     w1, #13
+    str     w1, [x0]
+    ldr     x0, =UART_FR
+.Lq_lf:
+    ldr     w1, [x0]
+    tbnz    w1, #5, .Lq_lf
+    ldr     x0, =UART_DR
+    mov     w1, #10
+    str     w1, [x0]
+    // Store TIB length, reset >IN
+    ldr     x0, =word_ntib + 32
+    str     x6, [x0]
+    ldr     x0, =word_toin + 32
+    str     xzr, [x0]
+
+    // ── Process each word in the TIB ─────────────────────────────────────
+.Lquit_word:
+    .global quit_word_loop
+quit_word_loop:
+    // Parse next space-delimited token from TIB
+    ldr     x0, =word_toin + 32
+    ldr     x1, [x0]                    // >IN
+    ldr     x2, =word_ntib + 32
+    ldr     x2, [x2]                    // #TIB
+    ldr     x3, =TIB_BASE
+
+    // Skip leading spaces
+.Lq_skip:
+    cmp     x1, x2
+    bge     .Lq_newline                 // exhausted — print ok, new prompt
+    ldrb    w4, [x3, x1]
+    cmp     w4, #' '
+    bne     .Lq_collect
+    add     x1, x1, #1
+    b       .Lq_skip
+
+    // Collect non-space chars into scratch buffer at HERE
+.Lq_collect:
+    ldr     x5, =word_here + 32
+    ldr     x5, [x5]                    // token buffer = current HERE
+    mov     x6, #0
+.Lq_coll:
+    cmp     x1, x2
+    bge     .Lq_colldone
+    ldrb    w4, [x3, x1]
+    cmp     w4, #' '
+    beq     .Lq_colldone
+    strb    w4, [x5, x6]
+    add     x1, x1, #1
+    add     x6, x6, #1
+    b       .Lq_coll
+.Lq_colldone:
+    // Update >IN
+    ldr     x0, =word_toin + 32
+    str     x1, [x0]
+    // x5 = token addr, x6 = token len
+
+    // ── Dictionary lookup ─────────────────────────────────────────────────
+    ldr     x0, =word_latest + 32
+    ldr     x0, [x0]
+.Lq_find:
+    cbz     x0, .Lq_number             // not found: try as number
+    ldr     x1, [x0, #8]               // flags|len of this entry
+    and     x2, x1, #(F_HIDDEN << 8)
+    cbnz    x2, .Lq_fnext              // hidden: skip
+    and     x2, x1, #0xFF              // name length
+    cmp     x2, x6
+    bne     .Lq_fnext
+    add     x3, x0, #16                // name field
+    mov     x4, #0
+.Lq_fcmp:
+    cmp     x4, x6
+    bge     .Lq_found
+    ldrb    w7, [x5, x4]
+    ldrb    w8, [x3, x4]
+    cmp     w7, w8
+    bne     .Lq_fnext
+    add     x4, x4, #1
+    b       .Lq_fcmp
+.Lq_fnext:
+    ldr     x0, [x0]
+    ldr     x3, =TIB_BASE
+    b       .Lq_find
+
+    // ── Word found in dictionary ──────────────────────────────────────────
+.Lq_found:
+    // x0 = entry address
+    ldr     x1, [x0, #8]               // flags|len
+    // Check immediate flag — immediate words always execute
+    and     x2, x1, #(F_IMMEDIATE << 8)
+    cbnz    x2, .Lq_execute
+
+    // Check STATE
+    ldr     x1, =word_state + 32
+    ldr     x1, [x1]
+    cbnz    x1, .Lq_compile            // compiling: append to HERE
+
+    // Interpreting: execute it
+.Lq_execute:
+    // Set W = entry, load codeword, branch
+    // We do this with a mini NEXT — but we need IP to be valid.
+    // Solution: build a one-cell trampoline on the return stack.
+    // After execution, the word's EXIT will pop our saved IP and
+    // return to .Lquit_word via the trampoline cell we leave.
+    //
+    // Actually simpler: just call the codeword directly.
+    // Non-colon words end with NEXT which needs a valid IP.
+    // We point IP at a 'resume' cell that holds word_quit's entry.
+    // This keeps NEXT safe for primitives that fall into it.
+    mov     W, x0
+    ldr     x0, =trampoline_quit
+    mov     IP, x0
+    ldr     x0, [W, #24]               // codeword
+    br      x0
+
+.Lq_compile:
+    // Append the entry address (xt) to HERE
+    ldr     x1, =word_here + 32
+    ldr     x2, [x1]                   // current HERE
+    str     x0, [x2]                   // write xt
+    add     x2, x2, #8
+    str     x2, [x1]                   // update HERE
+    b       .Lquit_word
+
+    // ── Try as number ─────────────────────────────────────────────────────
+.Lq_number:
+    // x5 = token addr, x6 = token len
+    ldr     x0, =word_base + 32
+    ldr     x0, [x0]                   // BASE
+
+    // Check for leading '-'
+    ldrb    w1, [x5]
+    mov     x9, #0
+    cmp     w1, #'-'
+    bne     .Lq_numparse
+    mov     x9, #1
+    add     x5, x5, #1
+    sub     x6, x6, #1
+    cbz     x6, .Lq_error
+
+.Lq_numparse:
+    mov     x3, #0                     // accumulator
+    mov     x4, #0                     // index
+.Lq_numloop:
+    cmp     x4, x6
+    bge     .Lq_numok
+    ldrb    w1, [x5, x4]
+    cmp     w1, #'0'
+    blt     .Lq_error
+    cmp     w1, #'9'
+    ble     .Lq_numdec
+    cmp     w1, #'A'
+    blt     .Lq_error
+    cmp     w1, #'F'
+    ble     .Lq_numupp
+    cmp     w1, #'a'
+    blt     .Lq_error
+    cmp     w1, #'f'
+    bgt     .Lq_error
+    sub     w1, w1, #('a' - 10)
+    b       .Lq_numdig
+.Lq_numupp:
+    sub     w1, w1, #('A' - 10)
+    b       .Lq_numdig
+.Lq_numdec:
+    sub     w1, w1, #'0'
+.Lq_numdig:
+    cmp     x1, x0
+    bge     .Lq_error
+    mul     x3, x3, x0
+    add     x3, x3, x1
+    add     x4, x4, #1
+    b       .Lq_numloop
+.Lq_numok:
+    cbnz    x9, 1f
+    b       2f
+1:  neg     x3, x3
+2:
+    // Number parsed successfully: x3 = value
+    ldr     x1, =word_state + 32
+    ldr     x1, [x1]
+    cbz     x1, .Lq_push               // interpret: push
+
+    // Compile: LIT + value
+    ldr     x1, =word_here + 32
+    ldr     x2, [x1]
+    ldr     x4, =word_lit
+    str     x4, [x2]                   // compile LIT
+    add     x2, x2, #8
+    str     x3, [x2]                   // compile value
+    add     x2, x2, #8
+    str     x2, [x1]                   // update HERE
+    b       .Lquit_word
+
+.Lq_push:
+    str     x3, [DSP, #-8]!           // push number onto data stack
+    b       .Lquit_word
+
+    // ── Error — unknown word ──────────────────────────────────────────────
+.Lq_error:
+    // Print the offending token and "?" then reset
+    ldr     x0, =str_err
+    ldr     x1, =str_err_end
+    sub     x1, x1, x0
+    bl      puts_uart
+    b       .Lquit_restart             // reset stacks, start over
+
+    // ── End of line — print " ok" and prompt ─────────────────────────────
+.Lq_newline:
+    // Only print "ok" if in interpret mode (standard Forth convention)
+    ldr     x0, =word_state + 32
+    ldr     x0, [x0]
+    cbnz    x0, .Lq_prompt_only
+
+    ldr     x0, =str_ok
+    ldr     x1, =str_ok_end
+    sub     x1, x1, x0
+    bl      puts_uart
+
+.Lq_prompt_only:
+    ldr     x0, =str_prompt
+    ldr     x1, =str_prompt_end
+    sub     x1, x1, x0
+    bl      puts_uart
+    b       .Lquit_line
+
+// ── Trampoline — NEXT target after executing a word from QUIT ────────────────
+// When QUIT dispatches a word, IP is set to trampoline_quit.
+// For primitives: NEXT reads *IP = word_quit_resume, dispatches code_quit_resume
+//   which branches to quit_word_loop (next token), leaving data stack intact.
+// For colon defs: DOCOL pushes IP (=trampoline_quit) onto RSP; EXIT pops it
+//   and does NEXT, which dispatches word_quit_resume → quit_word_loop.
+// This preserves the data stack between words on a single input line.
+
+// Internal word (hidden): jump to QUIT's token loop without resetting stacks.
+defcode "_QR", 3, quit_resume, F_HIDDEN
+    b       quit_word_loop
+
+    .section .rodata
+    .balign 8
+trampoline_quit:
+    .quad   word_quit_resume
+
+// ═════════════════════════════════════════════════════════════════════════════
+// HELPER SUBROUTINES (called via BL, not NEXT — these are C-ABI helpers)
+// ═════════════════════════════════════════════════════════════════════════════
+
+    .text
+    .balign 4
+
+// printhex64 ( x0 = value ) — print 16 hex digits to UART
+// Clobbers x0-x4. Uses standard C ABI (bl/ret).
+printhex64:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    mov     x4, x0                     // value
+    mov     x3, #60                    // bit shift start
+1:  lsr     x0, x4, x3
+    and     x0, x0, #0xF
+    cmp     x0, #10
+    blt     2f
+    add     x0, x0, #('A' - 10)
+    b       3f
+2:  add     x0, x0, #'0'
+3:  // emit char in w0
+    ldr     x1, =UART_FR
+4:  ldr     w2, [x1]
+    tbnz    w2, #5, 4b
+    ldr     x1, =UART_DR
+    str     w0, [x1]
+    subs    x3, x3, #4
+    bge     1b
+    ldp     x29, x30, [sp], #16
+    ret
+
+// puts_uart ( x0 = addr, x1 = len ) — write a string to UART
+// Clobbers x0-x4.
+puts_uart:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    cbz     x1, .Lputs_done
+    mov     x4, x0                     // addr
+    mov     x3, x1                     // len
+.Lputs_loop:
+    ldrb    w0, [x4], #1
+    ldr     x1, =UART_FR
+.Lputs_wait:
+    ldr     w2, [x1]
+    tbnz    w2, #5, .Lputs_wait
+    ldr     x1, =UART_DR
+    str     w0, [x1]
+    subs    x3, x3, #1
+    bne     .Lputs_loop
+.Lputs_done:
+    ldp     x29, x30, [sp], #16
+    ret
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STRING LITERALS
+// ═════════════════════════════════════════════════════════════════════════════
+
+    .section .rodata
+    .balign 4
+
+str_banner:
+    .ascii  "\r\nFock v0.1  AArch64 Forth\r\n"
+str_banner_end:
+
+str_ok:
+    .ascii  " ok\r\n"
+str_ok_end:
+
+str_prompt:
+    .ascii  "> "
+str_prompt_end:
+
+str_err:
+    .ascii  " ?\r\n"
+str_err_end:
+
+// ═════════════════════════════════════════════════════════════════════════════
+// COLD START
+// ═════════════════════════════════════════════════════════════════════════════
+// The initial "program" — a list of word addresses that Forth executes.
+// IP is set to cold_start before the first NEXT. NEXT loads word_quit,
+// loads DOCOL (its codeword), and DOCOL sets IP to quit's body.
+// But QUIT is a defcode (primitive), not a colon def, so we handle it
+// specially: cold_start just holds quit's entry; NEXT loads its codeword
+// (code_quit) and branches there directly.
+
+    .balign 8
+    .global cold_start
+cold_start:
+    .quad   word_quit
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ENTRY POINT
+// Called from main.c after UART init.
+// Sets up VM registers, patches LATEST, prints banner, enters QUIT.
+// ═════════════════════════════════════════════════════════════════════════════
+
+    .text
+    .balign 4
+    .global forth_main
+forth_main:
+    // Callee-saved registers (we never return, but keep ABI clean)
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+
+    // Initialize Forth VM registers
+    ldr     DSP, =DSTACK_TOP            // data stack pointer
+    ldr     RSP, =RSTACK_TOP            // return stack pointer
+
+    // Patch LATEST to point at the last defword in the chain.
+    // 'link' is the assembler symbol holding the last defined entry address.
+    // We store it into LATEST's body at runtime.
+    ldr     x0, =word_latest + 32       // address of LATEST's storage cell
+    ldr     x1, =word_quit_resume       // last defined entry (see defcode order)
+    str     x1, [x0]
+
+    // Print banner
+    ldr     x0, =str_banner
+    ldr     x1, =str_banner_end
+    sub     x1, x1, x0
+    bl      puts_uart
+
+    // Set IP to cold_start and fire NEXT — enters QUIT
+    ldr     IP, =cold_start
+    NEXT
+
+    // Never reached
+    ldp     x29, x30, [sp], #16
+    ret
