@@ -1041,6 +1041,263 @@ defcode "HID", 3, hidden, 0
     NEXT
 
 // ═════════════════════════════════════════════════════════════════════════════
+// COLON DEFINITIONS
+// ═════════════════════════════════════════════════════════════════════════════
+
+// : ( -- )   begin a colon definition
+// Parses next space-delimited token from TIB, builds a DOCOL header at HERE,
+// updates LATEST and HERE, marks the entry hidden until ; completes, enters
+// compile mode.
+defcode ":", 1, colon, 0
+    // Load current HERE — this will be the base of the new entry
+    ldr     x10, =word_here + 32
+    ldr     x10, [x10]                  // x10 = entry base
+
+    // ── Parse next token from TIB ─────────────────────────────────────────
+    ldr     x0, =word_toin + 32
+    ldr     x1, [x0]                    // x1 = >IN
+    ldr     x2, =word_ntib + 32
+    ldr     x2, [x2]                    // x2 = #TIB
+    ldr     x3, =TIB_BASE
+
+    // Skip leading spaces
+.Lcolon_skip:
+    cmp     x1, x2
+    bge     .Lcolon_noname
+    ldrb    w4, [x3, x1]
+    cmp     w4, #' '
+    bne     .Lcolon_collect
+    add     x1, x1, #1
+    b       .Lcolon_skip
+
+    // Collect name chars into entry+16; zero the field first
+.Lcolon_collect:
+    str     xzr, [x10, #16]             // zero name field
+    add     x5, x10, #16               // x5 = name field address
+    mov     x6, #0                      // x6 = length
+.Lcolon_coll:
+    cmp     x1, x2
+    bge     .Lcolon_namedone
+    ldrb    w4, [x3, x1]
+    cmp     w4, #' '
+    beq     .Lcolon_namedone
+    cmp     x6, #7                      // max 7 chars (8th byte stays zero)
+    bge     .Lcolon_namedone
+    strb    w4, [x5, x6]
+    add     x1, x1, #1
+    add     x6, x6, #1
+    b       .Lcolon_coll
+
+.Lcolon_namedone:
+    // Update >IN
+    ldr     x0, =word_toin + 32
+    str     x1, [x0]
+
+    // ── Write dictionary header at x10 ───────────────────────────────────
+    // [entry+0]  = link  = current LATEST
+    ldr     x0, =word_latest + 32
+    ldr     x0, [x0]
+    str     x0, [x10]
+
+    // [entry+8]  = flags|len  (hidden during compilation)
+    orr     x0, x6, #(F_HIDDEN << 8)
+    str     x0, [x10, #8]
+
+    // [entry+16] = name  (already written above)
+
+    // [entry+24] = codeword = DOCOL
+    ldr     x0, =DOCOL
+    str     x0, [x10, #24]
+
+    // ── Update LATEST and HERE ────────────────────────────────────────────
+    ldr     x0, =word_latest + 32
+    str     x10, [x0]                   // LATEST = new entry
+
+    add     x0, x10, #32               // HERE = entry + 32 (body starts here)
+    ldr     x1, =word_here + 32
+    str     x0, [x1]
+
+    // ── Enter compile mode ────────────────────────────────────────────────
+    ldr     x0, =word_state + 32
+    mov     x1, #1
+    str     x1, [x0]
+    NEXT
+
+.Lcolon_noname:
+    NEXT                                // no name token — ignore silently
+
+// ; ( -- )   end a colon definition  (IMMEDIATE)
+// Compiles EXIT, unhides the new word, returns to interpret mode.
+defcode ";", 1, semicolon, F_IMMEDIATE
+    // Compile EXIT: append word_exit to HERE
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]                    // x1 = HERE
+    ldr     x2, =word_exit
+    str     x2, [x1]                    // write EXIT entry address
+    add     x1, x1, #8
+    str     x1, [x0]                    // update HERE
+
+    // Unhide the word just defined (clear F_HIDDEN bit)
+    ldr     x0, =word_latest + 32
+    ldr     x0, [x0]                    // x0 = latest entry
+    ldr     x1, [x0, #8]               // flags|len
+    mov     x2, #(F_HIDDEN << 8)
+    bic     x1, x1, x2                 // x1 &= ~(F_HIDDEN << 8)
+    str     x1, [x0, #8]
+
+    // Return to interpret mode
+    ldr     x0, =word_state + 32
+    str     xzr, [x0]
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CONTROL FLOW COMPILER WORDS  (all F_IMMEDIATE — run at compile time)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Offset convention (BRN / 0BRN):
+//   When code_branch / code_zbranch runs, IP points TO the offset cell.
+//   The branch sets IP = &offset_cell + offset, then NEXT reads from there.
+//   So:  offset = target_addr - &offset_cell
+//   Forward jump (positive),  backward jump (negative).
+//
+// Data-stack protocol during compilation:
+//   IF   ( -- fixup )            fixup = addr of the 0BRN offset cell
+//   THEN ( fixup -- )            patches fixup so false branch exits block
+//   ELSE ( fixup_if -- fixup_else )
+//   BEGIN ( -- loop_addr )       loop_addr = first word of loop body
+//   UNTIL ( loop_addr -- )       0BRN back to loop_addr when false (= 0)
+//   AGAIN ( loop_addr -- )       unconditional BRN back to loop_addr
+//   WHILE ( loop_addr -- loop_addr fixup_while )
+//   REPEAT ( loop_addr fixup_while -- )
+
+// IF  ( -- fixup )
+defcode "IF", 2, if, F_IMMEDIATE
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]               // x1 = HERE
+    ldr     x2, =word_zbranch
+    str     x2, [x1]               // compile word_zbranch
+    add     x1, x1, #8
+    str     xzr, [x1]              // compile placeholder 0
+    str     x1, [DSP, #-8]!        // push placeholder addr (fixup)
+    add     x1, x1, #8
+    str     x1, [x0]               // update HERE
+    NEXT
+
+// THEN  ( fixup -- )
+// Back-patches the forward branch left by IF or ELSE.
+defcode "THEN", 4, then, F_IMMEDIATE
+    ldr     x1, [DSP], #8          // pop fixup (offset cell address)
+    ldr     x0, =word_here + 32
+    ldr     x2, [x0]               // x2 = HERE (branch target)
+    sub     x3, x2, x1             // offset = HERE - fixup_addr
+    str     x3, [x1]               // patch placeholder
+    NEXT
+
+// ELSE  ( fixup_if -- fixup_else )
+// Compiles BRN over the else-body; back-patches IF's forward branch to here.
+defcode "ELSE", 4, else, F_IMMEDIATE
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]               // x1 = HERE
+    ldr     x2, =word_branch
+    str     x2, [x1]               // compile word_branch
+    add     x1, x1, #8
+    str     xzr, [x1]              // compile placeholder 0
+    mov     x4, x1                 // x4 = ELSE's placeholder addr (fixup_else)
+    add     x1, x1, #8            // x1 = HERE = start of else-body
+    str     x1, [x0]               // update HERE
+    // Back-patch IF's placeholder: offset = HERE (start of else-body) - if_fixup
+    ldr     x3, [DSP], #8          // pop IF's fixup addr
+    sub     x5, x1, x3             // offset = start_of_else - if_fixup
+    str     x5, [x3]               // patch IF's placeholder
+    str     x4, [DSP, #-8]!        // push ELSE's fixup for THEN
+    NEXT
+
+// BEGIN  ( -- loop_addr )
+// Records the current HERE as the loop-back target.
+defcode "BEGIN", 5, begin, F_IMMEDIATE
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]               // x1 = HERE = loop-back target
+    str     x1, [DSP, #-8]!        // push it
+    NEXT
+
+// UNTIL  ( loop_addr -- )
+// Compile 0BRN back to loop_addr.  Loops while condition is false (= 0);
+// exits when condition is true (non-zero).
+defcode "UNTIL", 5, until, F_IMMEDIATE
+    ldr     x3, [DSP], #8          // pop loop-back target T
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]               // x1 = HERE
+    ldr     x2, =word_zbranch
+    str     x2, [x1]               // compile word_zbranch
+    add     x1, x1, #8             // x1 = offset cell addr
+    sub     x4, x3, x1             // offset = T - &offset_cell  (negative)
+    str     x4, [x1]               // compile offset
+    add     x1, x1, #8
+    str     x1, [x0]               // update HERE
+    NEXT
+
+// AGAIN  ( loop_addr -- )
+// Compile unconditional BRN back to loop_addr (infinite loop).
+defcode "AGAIN", 5, again, F_IMMEDIATE
+    ldr     x3, [DSP], #8          // pop loop-back target T
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]               // x1 = HERE
+    ldr     x2, =word_branch
+    str     x2, [x1]               // compile word_branch
+    add     x1, x1, #8             // x1 = offset cell addr
+    sub     x4, x3, x1             // offset = T - &offset_cell  (negative)
+    str     x4, [x1]               // compile offset
+    add     x1, x1, #8
+    str     x1, [x0]               // update HERE
+    NEXT
+
+// WHILE  ( loop_addr -- loop_addr fixup_while )
+// Compile 0BRN + placeholder.  Exits loop when condition is false (= 0).
+defcode "WHILE", 5, while, F_IMMEDIATE
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]               // x1 = HERE
+    ldr     x2, =word_zbranch
+    str     x2, [x1]               // compile word_zbranch
+    add     x1, x1, #8
+    str     xzr, [x1]              // compile placeholder 0
+    mov     x4, x1                 // x4 = WHILE's fixup addr
+    add     x1, x1, #8
+    str     x1, [x0]               // update HERE
+    str     x4, [DSP, #-8]!        // push fixup (loop_addr stays below it)
+    NEXT
+
+// RECURSE  ( -- )   compile a self-call to the word currently being defined.
+// The word is hidden during compilation, so it can't be found by name;
+// RECURSE compiles its entry address directly from LATEST.
+defcode "RECURSE", 7, recurse, F_IMMEDIATE
+    ldr     x0, =word_latest + 32
+    ldr     x1, [x0]               // LATEST = entry of word being defined
+    ldr     x0, =word_here + 32
+    ldr     x2, [x0]               // HERE
+    str     x1, [x2]               // compile self-reference
+    add     x2, x2, #8
+    str     x2, [x0]               // update HERE
+    NEXT
+
+// REPEAT  ( loop_addr fixup_while -- )
+// Compile BRN back to loop_addr; back-patch WHILE's fixup to exit the loop.
+defcode "REPEAT", 6, repeat, F_IMMEDIATE
+    ldr     x5, [DSP], #8          // pop WHILE's fixup addr
+    ldr     x3, [DSP], #8          // pop loop-back target T
+    ldr     x0, =word_here + 32
+    ldr     x1, [x0]               // x1 = HERE
+    ldr     x2, =word_branch
+    str     x2, [x1]               // compile word_branch
+    add     x1, x1, #8             // x1 = offset cell addr
+    sub     x4, x3, x1             // offset = T - &offset_cell  (negative)
+    str     x4, [x1]               // compile backward offset
+    add     x1, x1, #8             // x1 = HERE after REPEAT = loop exit addr
+    str     x1, [x0]               // update HERE
+    sub     x4, x1, x5             // offset = exit_addr - while_fixup
+    str     x4, [x5]               // patch WHILE's placeholder
+    NEXT
+
+// ═════════════════════════════════════════════════════════════════════════════
 // DEBUG / INTROSPECTION
 // ═════════════════════════════════════════════════════════════════════════════
 
