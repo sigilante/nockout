@@ -1528,6 +1528,15 @@ defcode "QUIT", 4, quit, 0
     ldr     x0, =word_state + 32
     str     xzr, [x0]
 
+    // Establish (or re-establish) nock crash recovery point.
+    // setjmp saves all callee-saved regs (x19-x28 inc. Forth VM regs,
+    // x29/x30, sp) with stacks already clean.
+    // Returns 0 on normal entry; 1 after longjmp from nock_crash()
+    // (crash message already printed).  Either way fall through to prompt.
+    ldr     x0, =nock_abort
+    bl      setjmp
+    // x0 ignored — both paths print the prompt and enter the line loop
+
     // Print prompt
     ldr     x0, =str_prompt
     ldr     x1, =str_prompt_end

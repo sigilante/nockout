@@ -33,6 +33,12 @@ typedef struct { int len; wilt_entry_t e[WILT_MAX]; } wilt_t;
 /* ── Jet function type ────────────────────────────────────────────────────── */
 typedef noun (*jet_fn_t)(noun core, const wilt_t *jets, sky_fn_t sky);
 
+/* ── Crash recovery ──────────────────────────────────────────────────────── */
+/* QUIT's restart path calls setjmp(nock_abort) to establish the recovery    */
+/* point.  nock_crash() calls longjmp(nock_abort,1) to unwind back to it.   */
+#include "setjmp.h"
+extern jmp_buf nock_abort;
+
 /* ── Public API ──────────────────────────────────────────────────────────── */
 noun nock(noun subject, noun formula);
 noun nock_ex(noun subject, noun formula, const wilt_t *jets, sky_fn_t sky);

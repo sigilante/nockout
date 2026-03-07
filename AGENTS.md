@@ -209,7 +209,7 @@ causing it to loop back into QUIT.
 - All TCO opcodes (2, 6, 7, 8, 9, 10-static) use `goto loop` — zero stack growth.
 - `hax(a, val, target)`: recursive tree edit, mirrors `slot` path-bit traversal.
 - Opcode 10: static hint (atom b → TCO eval d), dynamic/tree-edit ([b c] → hax(b, *[a c], *[a d])).
-- Crash behaviour: `nock_crash()` prints to UART and halts; longjmp recovery is Phase 3c.
+- Crash behaviour: `nock_crash()` prints to UART then `longjmp(nock_abort, 1)` back to QUIT.
 - Forth words: `SLOT ( axis noun -- result )`, `NOCK ( subject formula -- product )`.
 
 **Phase 3b: COMPLETE (op 11 + hint infrastructure)**
@@ -239,7 +239,9 @@ causing it to loop back into QUIT.
 
 - Phase 11c: populate `hot_state[]` with first real jets (`dec`, `add` as C functions).
 - Phase 11d: Forth words `.JETS` (print dashboard), `.WILT` (print active registrations), jet hit counters.
-- Phase 3c: longjmp-based crash recovery (back to QUIT loop) instead of halt.
+- Phase 3c: DONE. `src/setjmp.h` + `src/setjmp.s`: bare-metal AArch64 setjmp/longjmp (saves
+  x19–x28, x29/x30, sp; no FP regs). `jmp_buf nock_abort` established in QUIT `.Lquit_restart`
+  after stack reset. `nock_crash()` longjmps there; QUIT reprints prompt and loops cleanly.
 - Phase 4: bignum atoms.
 
 ## Future: Nock Evaluator in Forth (Phase 5+)
@@ -473,7 +475,7 @@ Nock that emits `%fast` hints, we silently ignore them (correct: `%fast` is pure
 | 2 | Noun heap: tagged pointers, cell alloc, refcount | DONE |
 | 3 | Nock 4K eval loop (opcodes 0–10, TCO, `hax`) | DONE |
 | 3b | Op 11 + hint dispatch (`%wild`, `%slog`, `%xray`) + jet infrastructure | DONE |
-| 3c | longjmp crash recovery (back to QUIT instead of halt) | TODO |
+| 3c | longjmp crash recovery (back to QUIT instead of halt) | DONE |
 | 4 | Bignum atoms | TODO |
 | 4b | BLAKE3 implementation + hash_atom() + intern() | TODO |
 | 5 | SKA: symbolic partial eval, annotated Nock, compile-time jet matching | TODO |

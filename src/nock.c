@@ -2,6 +2,11 @@
 #include "noun.h"
 #include "nock.h"
 #include "uart.h"
+#include "setjmp.h"
+
+/* ── Crash recovery point ────────────────────────────────────────────────── */
+
+jmp_buf nock_abort;   /* established in QUIT's restart path */
 
 /* ── Crash ───────────────────────────────────────────────────────────────── */
 
@@ -9,7 +14,7 @@ static void nock_crash(const char *msg) {
     uart_puts("\r\nnock crash: ");
     uart_puts(msg);
     uart_puts("\r\n");
-    for (;;) {}     /* halt — Phase 3c will longjmp to QUIT instead */
+    longjmp(nock_abort, 1);   /* unwind to QUIT restart */
 }
 
 /* ── Noun printer (%slog, %xray) ─────────────────────────────────────────── */
