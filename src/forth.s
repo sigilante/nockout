@@ -260,6 +260,23 @@ defcode "/MOD", 4, divmod, 0
     // Stack is now ( rem quot ) as expected
     NEXT
 
+// / ( a b -- a/b )   truncated quotient
+defcode "/", 1, div, 0
+    ldr     x0, [DSP], #8       // x0 = b (divisor)
+    ldr     x1, [DSP]           // x1 = a (dividend)
+    sdiv    x1, x1, x0
+    str     x1, [DSP]
+    NEXT
+
+// MOD ( a b -- a mod b )   truncated remainder
+defcode "MOD", 3, mod, 0
+    ldr     x0, [DSP], #8       // x0 = b (divisor)
+    ldr     x1, [DSP]           // x1 = a (dividend)
+    sdiv    x2, x1, x0          // x2 = quotient
+    msub    x1, x2, x0, x1      // x1 = a - (a/b)*b
+    str     x1, [DSP]
+    NEXT
+
 // NEGATE ( a -- -a )
 defcode "NEG", 3, negate, 0
     ldr     x0, [DSP]
@@ -1476,6 +1493,21 @@ defcode "=NOUN", 5, noueq, 0
     ldr     x0, [DSP], #8       // x0 = n1
     bl      noun_eq             // returns 1 (equal) or 0 (not equal)
     neg     x0, x0              // 1 → -1 (Forth true), 0 → 0 (Forth false)
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// HATOM ( noun -- noun' )   compute BLAKE3 hash of indirect atom;
+//   fills atom->blake3[], returns updated noun with 30-bit hash prefix set.
+//   Direct and cell nouns are passed through unchanged.
+defcode "HATOM", 5, hash_atom_word, 0
+    ldr     x0, [DSP], #8       // pop noun
+    bl      hash_atom           // noun.c: fills blake3[], returns noun with prefix
+    str     x0, [DSP, #-8]!    // push result
+    NEXT
+
+// B3OK ( -- flag )   run official BLAKE3 test vectors; pushes 1=pass 0=fail
+defcode "B3OK", 4, b3ok, 0
+    bl      blake3_selftest     // blake3.c: returns 1 (pass) or 0 (fail)
     str     x0, [DSP, #-8]!
     NEXT
 

@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include "noun.h"
 #include "memory.h"
+#include "blake3.h"
 
 /*
  * Noun heap allocator — bump allocator within HEAP_BASE..HEAP_TOP.
@@ -116,4 +117,48 @@ int noun_eq(noun a, noun b) {
     }
 
     return 0;
+}
+
+/* ── hash_atom ───────────────────────────────────────────────────────────── */
+
+/* Number of significant bytes in the last limb (1–8). */
+static size_t last_limb_bytes(uint64_t w) {
+    int sig = 8;
+    while (sig > 1 && ((w >> ((sig - 1) * 8)) & 0xff) == 0)
+        sig--;
+    return (size_t)sig;
+}
+
+noun hash_atom(noun n) {
+    if (!noun_is_indirect(n)) return n;
+
+    atom_t *a = (atom_t *)(uintptr_t)indirect_ptr(n);
+
+    /* Check whether blake3[] is already populated (any non-zero word). */
+    int done = 0;
+    for (int i = 0; i < 8; i++) { if (a->blake3[i]) { done = 1; break; } }
+
+    if (!done) {
+        /* Byte length: all limbs in full except the last, which is trimmed. */
+        size_t byte_len = (a->size > 0)
+            ? (a->size - 1) * 8 + last_limb_bytes(a->limbs[a->size - 1])
+            : 0;
+
+        uint8_t h[32];
+        blake3_hash((const uint8_t *)a->limbs, byte_len, h);
+
+        /* Store as 8 × uint32_t little-endian words. */
+        for (int i = 0; i < 8; i++) {
+            a->blake3[i] = (uint32_t)h[i*4]
+                         | ((uint32_t)h[i*4+1] <<  8)
+                         | ((uint32_t)h[i*4+2] << 16)
+                         | ((uint32_t)h[i*4+3] << 24);
+        }
+    }
+
+    /* Extract 30-bit prefix; treat 0 as 1 so 0 can still mean "not hashed". */
+    uint32_t prefix = a->blake3[0] & 0x3FFFFFFF;
+    if (prefix == 0) prefix = 1;
+
+    return indirect(indirect_ptr(n), prefix);
 }

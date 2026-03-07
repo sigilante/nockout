@@ -246,6 +246,26 @@ T "bn_inc: indirect → atom"     "FFFFFFFFFFFFFFFF" \
 T "bn_inc: eq double indirect"  "0000000000000000" \
     "0 N>N  5 N>N  4 N>N 4 N>N 1 N>N 4611686018427387903 N>N CONS CONS CONS  4 N>N 4 N>N 1 N>N 4611686018427387903 N>N CONS CONS CONS  CONS CONS  NOCK NOUN> ."
 
+# ── Phase 4b: BLAKE3 hashing and HATOM word ──────────────────────────────
+# Official test vectors (input[i]=i%251, lens 0,1,63,64,65,1024,1025)
+T "blake3: official vectors"    "0000000000000001" "B3OK ."
+# HATOM on a direct atom is a no-op; still an atom
+T "hash_atom: direct is atom"   "FFFFFFFFFFFFFFFF" \
+    "42 N>N HATOM ATOM? ."
+# HATOM on indirect atom (2^62) still yields an atom
+T "hash_atom: indirect is atom" "FFFFFFFFFFFFFFFF" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK HATOM ATOM? ."
+# Two independently computed 2^62 atoms hash to identical prefix → =NOUN true
+T "hash_atom: equal same value" "FFFFFFFFFFFFFFFF" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK HATOM \
+     0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK HATOM \
+     =NOUN ."
+# 2^62 vs 2^62+1 — different values → =NOUN false (0)
+T "hash_atom: unequal values"   "0000000000000000" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK HATOM \
+     0 N>N  4 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS CONS  NOCK HATOM \
+     =NOUN ."
+
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"
 for line in "${TLINES[@]}"; do

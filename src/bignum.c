@@ -21,12 +21,12 @@ noun bn_normalize(uint64_t *limbs, uint64_t size) {
     if (size == 1 && limbs[0] < (1ULL << 62))
         return direct(limbs[0]);
 
-    /* Allocate a fresh indirect atom and copy limbs */
+    /* Allocate a fresh indirect atom, copy limbs, and hash immediately. */
     noun r = alloc_indirect(size);
     atom_t *a = atom_of(r);
     for (uint64_t i = 0; i < size; i++)
         a->limbs[i] = limbs[i];
-    return r;
+    return hash_atom(r);
 }
 
 /* ── bn_inc ──────────────────────────────────────────────────────────────── */
@@ -54,7 +54,7 @@ noun bn_inc(noun a) {
         /* Boundary: v == 2^62-1, next value is 2^62 which needs indirect */
         noun r = alloc_indirect(1);
         atom_of(r)->limbs[0] = 1ULL << 62;
-        return r;
+        return hash_atom(r);
     }
 
     /* ── Indirect atom ── */
@@ -87,7 +87,7 @@ noun bn_inc(noun a) {
 
     /* Result is always ≥ 2^62 (input was indirect, we only added 1),
        so no promotion to direct needed.  MSL is non-zero by construction. */
-    return r;
+    return hash_atom(r);
 }
 
 /* ── Stubs for future phases ─────────────────────────────────────────────── */

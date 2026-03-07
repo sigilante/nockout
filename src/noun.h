@@ -95,3 +95,9 @@ noun  alloc_indirect(uint64_t size_limbs);   /* allocate indirect atom; caller f
 
 /* Nock equality: structural, O(1) for atoms via direct compare or hash prefix */
 int   noun_eq(noun a, noun b);
+
+/* Compute BLAKE3 hash of an indirect atom's limbs (if not already hashed).
+   Stores the full 256-bit hash in atom->blake3[].
+   Returns a new noun word with the 30-bit hash prefix embedded in bits 61:32.
+   Non-indirect nouns are returned unchanged. */
+noun  hash_atom(noun n);
