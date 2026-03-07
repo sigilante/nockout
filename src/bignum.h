@@ -37,15 +37,28 @@ noun bn_normalize(uint64_t *limbs, uint64_t size);
  */
 noun bn_inc(noun a);
 
-/* ── Phase 4b (decimal I/O) — declared here, implemented later ───────────── */
+/* Maximum limbs for stack-allocated scratch buffers (64 × 64-bit = 4096 bits,
+   handles decimal strings up to ~1232 digits — well beyond BN_DECIMAL_MAX). */
+#define BN_MAX_LIMBS 64
+
+/* ── Decimal I/O ──────────────────────────────────────────────────────────── */
+
+/* Maximum decimal digits bn_to_decimal will ever produce. */
+#define BN_DECIMAL_MAX 512
 
 /*
  * bn_to_decimal: write decimal representation of atom `a` into `buf`.
- * Returns the number of bytes written (no NUL terminator).
- * `buflen` must be at least BN_DECIMAL_MAX.
+ * Returns number of bytes written (no NUL terminator), or 0 on error.
+ * `buf` must be at least BN_DECIMAL_MAX bytes.
  */
-#define BN_DECIMAL_MAX 512
 int  bn_to_decimal(noun a, char *buf, int buflen);
+
+/*
+ * bn_to_decimal_fill: write decimal digits into the global bn_decimal_buf[].
+ * Returns length.  Convenience wrapper for Forth N. word.
+ */
+extern char bn_decimal_buf[BN_DECIMAL_MAX];
+int  bn_to_decimal_fill(noun a);
 
 /*
  * bn_from_decimal: parse `len` ASCII decimal digits into a noun atom.
@@ -53,7 +66,11 @@ int  bn_to_decimal(noun a, char *buf, int buflen);
  */
 noun bn_from_decimal(const char *buf, int len);
 
-/* ── Phase 11d (jets) — declared here, implemented with jet registration ─── */
+/* ── Arithmetic ───────────────────────────────────────────────────────────── */
 
-noun bn_add(noun a, noun b);   /* addition */
-noun bn_dec(noun a);           /* decrement; crashes on zero */
+noun bn_add(noun a, noun b);   /* addition                              */
+noun bn_dec(noun a);           /* decrement; crashes on zero            */
+noun bn_sub(noun a, noun b);   /* subtraction a-b; crashes if a < b    */
+
+/* Compare two atoms.  Returns -1 / 0 / +1  (a < b / a == b / a > b). */
+int  bn_cmp(noun a, noun b);

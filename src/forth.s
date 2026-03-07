@@ -1511,6 +1511,50 @@ defcode "B3OK", 4, b3ok, 0
     str     x0, [DSP, #-8]!
     NEXT
 
+// N. ( noun -- )   print atom as decimal + space
+// Calls bn_to_decimal_fill(noun) → fills bn_decimal_buf[], returns length.
+defcode "N.", 2, ndot, 0
+    ldr     x0, [DSP], #8
+    bl      bn_to_decimal_fill  // x0 = length written into bn_decimal_buf[]
+    cbz     x0, .Lndot_sp
+    mov     x4, x0              // x4 = remaining chars
+    ldr     x3, =bn_decimal_buf // x3 = buf pointer
+.Lndot_loop:
+    cbz     x4, .Lndot_sp
+    ldrb    w5, [x3], #1
+.Lndot_tx:
+    ldr     x6, =UART_FR
+    ldr     w7, [x6]
+    tbnz    w7, #5, .Lndot_tx
+    ldr     x6, =UART_DR
+    str     w5, [x6]
+    sub     x4, x4, #1
+    b       .Lndot_loop
+.Lndot_sp:
+    ldr     x6, =UART_FR
+.Lndot_spw:
+    ldr     w7, [x6]
+    tbnz    w7, #5, .Lndot_spw
+    ldr     x6, =UART_DR
+    mov     w7, #' '
+    str     w7, [x6]
+    NEXT
+
+// BN+ ( noun1 noun2 -- noun )   bignum addition
+defcode "BN+", 3, bnadd, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_add
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNDEC ( noun -- noun )   bignum decrement (crashes on zero)
+defcode "BNDEC", 5, bndec, 0
+    ldr     x0, [DSP], #8
+    bl      bn_dec
+    str     x0, [DSP, #-8]!
+    NEXT
+
 // ─────────────────────────────────────────────────────────────────────────────
 // NOCK EVAL PRIMITIVES  (Phase 3 — interfaces to nock.c)
 // ─────────────────────────────────────────────────────────────────────────────

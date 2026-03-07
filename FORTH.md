@@ -231,6 +231,21 @@ Nouns are 64-bit tagged values. Tag bits 63:62: `00`=cell, `01`=direct atom, `10
 
 ---
 
+## Bignum Primitives  *(Phase 4 — arbitrary-precision atoms)*
+
+Atoms larger than 2^62-1 are stored as indirect `atom_t` structs on the heap.
+All arithmetic operates on atom nouns; see `BIGNUM.md` for the full implementation reference.
+
+| Word    | Stack effect          | Notes                                                          |
+|---------|-----------------------|----------------------------------------------------------------|
+| `N.`    | `( noun -- )`         | Print atom as decimal digits + space                          |
+| `BN+`   | `( n1 n2 -- n )`      | Add two atom nouns; result is a canonical atom noun           |
+| `BNDEC` | `( noun -- noun )`    | Decrement atom noun by 1; crashes on zero                     |
+
+> Note: the REPL number parser is 64-bit native. Atoms larger than 2^62-1 must be constructed via Nock (repeated `op 4`) or `BN+`, not by typing large decimal literals.
+
+---
+
 ## Nock Primitives  *(Phase 3 — Nock 4K evaluator)*
 
 | Word   | Stack effect                      | Notes                                            |

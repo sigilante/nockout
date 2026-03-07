@@ -90,24 +90,175 @@ noun bn_inc(noun a) {
     return hash_atom(r);
 }
 
-/* ── Stubs for future phases ─────────────────────────────────────────────── */
+/* ── Internal scratch helpers ─────────────────────────────────────────────── */
+
+/* Extract limbs and size from any atom into a caller-provided scratch array.
+   Returns size; caller must ensure scratch has at least BN_MAX_LIMBS slots. */
+static uint64_t atom_limbs(noun a, uint64_t *out) {
+    if (noun_is_direct(a)) {
+        out[0] = direct_val(a);
+        return 1;
+    }
+    atom_t *at = atom_of(a);
+    uint64_t sz = at->size < BN_MAX_LIMBS ? at->size : BN_MAX_LIMBS;
+    for (uint64_t i = 0; i < sz; i++) out[i] = at->limbs[i];
+    return sz;
+}
+
+/* ── bn_cmp ───────────────────────────────────────────────────────────────── */
+
+int bn_cmp(noun a, noun b) {
+    uint64_t la[BN_MAX_LIMBS], lb[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la);
+    uint64_t sb = atom_limbs(b, lb);
+    if (sa != sb) return sa < sb ? -1 : 1;
+    for (int64_t i = (int64_t)sa - 1; i >= 0; i--) {
+        if (la[i] != lb[i]) return la[i] < lb[i] ? -1 : 1;
+    }
+    return 0;
+}
+
+/* ── bn_dec ───────────────────────────────────────────────────────────────── */
+
+noun bn_dec(noun a) {
+    if (noun_is_direct(a)) {
+        uint64_t v = direct_val(a);
+        if (v == 0) nock_crash("bn_dec: underflow");
+        return direct(v - 1);
+    }
+    if (!noun_is_indirect(a)) nock_crash("bn_dec: unsupported atom type");
+
+    atom_t *src = atom_of(a);
+    uint64_t size = src->size;
+
+    /* Find first non-zero limb — that is where the borrow stops. */
+    uint64_t i = 0;
+    while (i < size && src->limbs[i] == 0) i++;
+    if (i == size) nock_crash("bn_dec: underflow (indirect zero)");
+
+    uint64_t scratch[BN_MAX_LIMBS];
+    for (uint64_t j = 0; j < size; j++) scratch[j] = src->limbs[j];
+
+    /* Limbs [0..i-1] borrow-wrap 0 → UINT64_MAX */
+    for (uint64_t j = 0; j < i; j++) scratch[j] = UINT64_MAX;
+    scratch[i]--;
+
+    return bn_normalize(scratch, size);
+}
+
+/* ── bn_add ───────────────────────────────────────────────────────────────── */
+
+noun bn_add(noun a, noun b) {
+    uint64_t la[BN_MAX_LIMBS], lb[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la);
+    uint64_t sb = atom_limbs(b, lb);
+    uint64_t sr = (sa > sb ? sa : sb) + 1;
+
+    uint64_t lr[BN_MAX_LIMBS + 1];
+    uint64_t carry = 0;
+    for (uint64_t i = 0; i < sr; i++) {
+        uint64_t x = i < sa ? la[i] : 0;
+        uint64_t y = i < sb ? lb[i] : 0;
+        __uint128_t sum = (__uint128_t)x + y + carry;
+        lr[i]  = (uint64_t)sum;
+        carry  = (uint64_t)(sum >> 64);
+    }
+    return bn_normalize(lr, sr);
+}
+
+/* ── bn_sub ───────────────────────────────────────────────────────────────── */
+
+noun bn_sub(noun a, noun b) {
+    if (bn_cmp(a, b) < 0) nock_crash("bn_sub: underflow");
+
+    uint64_t la[BN_MAX_LIMBS], lb[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la);
+    uint64_t sb = atom_limbs(b, lb);
+
+    uint64_t lr[BN_MAX_LIMBS];
+    uint64_t borrow = 0;
+    for (uint64_t i = 0; i < sa; i++) {
+        uint64_t x = la[i];
+        uint64_t y = i < sb ? lb[i] : 0;
+        uint64_t diff = x - y - borrow;
+        borrow = (x < y + borrow || (borrow && y == UINT64_MAX)) ? 1 : 0;
+        lr[i] = diff;
+    }
+    return bn_normalize(lr, sa);
+}
+
+/* ── Decimal I/O ──────────────────────────────────────────────────────────── */
+
+/* Divide scratch[0..sz-1] by 10 in-place; return remainder (0–9). */
+static uint64_t bn_div10_inplace(uint64_t *limbs, uint64_t sz) {
+    uint64_t rem = 0;
+    for (int64_t i = (int64_t)sz - 1; i >= 0; i--) {
+        __uint128_t cur = ((__uint128_t)rem << 64) | limbs[i];
+        limbs[i] = (uint64_t)(cur / 10);
+        rem      = (uint64_t)(cur % 10);
+    }
+    return rem;
+}
 
 int bn_to_decimal(noun a, char *buf, int buflen) {
-    (void)a; (void)buf; (void)buflen;
-    nock_crash("bn_to_decimal: NYI (Phase 4c)");
+    uint64_t scratch[BN_MAX_LIMBS];
+    uint64_t sz = atom_limbs(a, scratch);
+
+    /* Special case: zero */
+    if (sz == 1 && scratch[0] == 0) {
+        if (buflen < 1) return 0;
+        buf[0] = '0';
+        return 1;
+    }
+
+    /* Collect digits in reverse order. */
+    char tmp[BN_DECIMAL_MAX];
+    int pos = 0;
+    while (sz > 1 || scratch[0] != 0) {
+        uint64_t rem = bn_div10_inplace(scratch, sz);
+        while (sz > 1 && scratch[sz - 1] == 0) sz--;
+        if (pos < BN_DECIMAL_MAX) tmp[pos++] = (char)('0' + rem);
+    }
+
+    if (pos > buflen) return 0;
+    for (int i = 0; i < pos; i++) buf[i] = tmp[pos - 1 - i];
+    return pos;
+}
+
+/* Global buffer used by the Forth N. word (not reentrant). */
+char bn_decimal_buf[BN_DECIMAL_MAX];
+
+int bn_to_decimal_fill(noun a) {
+    return bn_to_decimal(a, bn_decimal_buf, BN_DECIMAL_MAX);
+}
+
+/* Multiply limbs[0..sz-1] by 10 and add digit d (0–9).
+   Writes result into out[0..sz] (at most sz+1 limbs). Returns new size. */
+static uint64_t do_mul10_add(const uint64_t *limbs, uint64_t sz,
+                              uint8_t d, uint64_t *out) {
+    uint64_t carry = d;
+    for (uint64_t i = 0; i < sz; i++) {
+        __uint128_t prod = (__uint128_t)limbs[i] * 10 + carry;
+        out[i] = (uint64_t)prod;
+        carry  = (uint64_t)(prod >> 64);
+    }
+    if (carry) { out[sz] = carry; return sz + 1; }
+    return sz;
 }
 
 noun bn_from_decimal(const char *buf, int len) {
-    (void)buf; (void)len;
-    nock_crash("bn_from_decimal: NYI (Phase 4c)");
-}
+    if (len <= 0) return NOUN_ZERO;
 
-noun bn_add(noun a, noun b) {
-    (void)a; (void)b;
-    nock_crash("bn_add: NYI (Phase 11d)");
-}
+    uint64_t scratch[BN_MAX_LIMBS + 1];
+    scratch[0] = 0;
+    uint64_t sz = 1;
 
-noun bn_dec(noun a) {
-    (void)a;
-    nock_crash("bn_dec: NYI (Phase 11d)");
+    for (int i = 0; i < len; i++) {
+        uint8_t d = (uint8_t)(buf[i] - '0');
+        uint64_t tmp[BN_MAX_LIMBS + 1];
+        sz = do_mul10_add(scratch, sz, d, tmp);
+        if (sz > BN_MAX_LIMBS) sz = BN_MAX_LIMBS;
+        for (uint64_t j = 0; j < sz; j++) scratch[j] = tmp[j];
+    }
+    return bn_normalize(scratch, sz);
 }

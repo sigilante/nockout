@@ -27,7 +27,13 @@ TLINES=()
 
 T() {   # T  "description"  "expected-hex-uppercase-16"  "forth expression"
     TNAMES+=("$1")
-    TEXPECT+=("$2")
+    TEXPECT+=("hex:$2")
+    TLINES+=("$3")
+}
+
+TD() {  # TD "description"  "expected-decimal-string"  "forth expression"
+    TNAMES+=("$1")
+    TEXPECT+=("dec:$2")
     TLINES+=("$3")
 }
 
@@ -266,6 +272,47 @@ T "hash_atom: unequal values"   "0000000000000000" \
      0 N>N  4 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS CONS  NOCK HATOM \
      =NOUN ."
 
+# ── Phase 4c: bignum arithmetic and decimal I/O ───────────────────────────
+# bn_dec: decrement indirect atom 2^62 → 2^62-1 (direct) → ATOM? true
+# Compute 2^62 via Nock op4 on (2^62-1), then BNDEC, check ATOM?
+T "bn_dec: indirect→direct"    "FFFFFFFFFFFFFFFF" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  BNDEC ATOM? ."
+# bn_dec of 2^62 → 2^62-1 (direct atom); NOUN> should yield 4611686018427387903
+T "bn_dec: value correct"      "3FFFFFFFFFFFFFFF" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  BNDEC NOUN> ."
+# bn_add: 2 + 3 = 5 (direct + direct)
+T "bn_add: 2+3=5"              "0000000000000005" \
+    "2 N>N  3 N>N  BN+ NOUN> ."
+# bn_add: 0 + 0 = 0
+T "bn_add: 0+0=0"              "0000000000000000" \
+    "0 N>N  0 N>N  BN+ NOUN> ."
+# bn_add: (2^62-1) + 1 = 2^62 (indirect atom); ATOM? true
+T "bn_add: boundary to indirect" "FFFFFFFFFFFFFFFF" \
+    "4611686018427387903 N>N  1 N>N  BN+ ATOM? ."
+# bn_add: 2^62 + 2^62 = 2^63 (indirect); ATOM? true
+T "bn_add: 2^62+2^62 indirect"  "FFFFFFFFFFFFFFFF" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
+     0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
+     BN+ ATOM? ."
+# bn_dec after bn_add roundtrip: (2^62 + 2^62) - 1 = 2^63-1; ATOM? true
+T "bn_add/dec roundtrip"        "FFFFFFFFFFFFFFFF" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
+     0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
+     BN+  BNDEC ATOM? ."
+
+# N. decimal output tests (TD captures decimal strings)
+TD "N.: zero"                  "0"                    "0 N>N N."
+TD "N.: small decimal"         "42"                   "42 N>N N."
+TD "N.: 2^62-1 direct"         "4611686018427387903"  "4611686018427387903 N>N N."
+# N. on indirect atom 2^62 (result of bn_inc at boundary)
+TD "N.: 2^62 indirect"         "4611686018427387904" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  N."
+# N. on 2^62 + 2^62 = 2^63
+TD "N.: 2^63"                  "9223372036854775808" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
+     0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
+     BN+  N."
+
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"
 for line in "${TLINES[@]}"; do
@@ -276,12 +323,17 @@ RAW=$(printf '%s\n' "$INPUT" | \
     timeout 15 qemu-system-aarch64 -machine raspi3b -kernel kernel8.img \
         -display none -nographic 2>/dev/null || true)
 
-# Extract 16-char uppercase hex values that appear before "  ok"
+# Extract results from output lines.
+# Each test produces one output token followed by whitespace and "ok".
+# Hex tests: 16-char hex token  → stored as "hex:HEXVALUE"
+# Decimal tests: decimal token  → stored as "dec:DECVALUE"
 ACTUAL=()
 while IFS= read -r line; do
     line="${line%$'\r'}"   # strip CR from CRLF
     if [[ "$line" =~ ^([0-9A-Fa-f]{16})[[:space:]]+ok ]]; then
-        ACTUAL+=("${BASH_REMATCH[1]^^}")  # uppercase
+        ACTUAL+=("hex:${BASH_REMATCH[1]^^}")
+    elif [[ "$line" =~ ^([0-9]+)[[:space:]]+ok ]]; then
+        ACTUAL+=("dec:${BASH_REMATCH[1]}")
     fi
 done <<< "$RAW"
 
