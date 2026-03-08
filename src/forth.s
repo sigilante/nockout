@@ -30,7 +30,7 @@
 .set DICT_BASE,    0x00090000
 .set DSTACK_TOP,   0x00480000
 .set RSTACK_TOP,   0x00490000
-.set TIB_BASE,     0x00089000
+.set TIB_BASE,     0x0008f000
 .set TIB_SIZE,     256
 
 // ── UART (PL011) ─────────────────────────────────────────────────────────────
@@ -1552,6 +1552,86 @@ defcode "BN+", 3, bnadd, 0
 defcode "BNDEC", 5, bndec, 0
     ldr     x0, [DSP], #8
     bl      bn_dec
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNMET ( noun -- n )   significant bit length; result is raw integer
+defcode "BNMET", 5, bnmet, 0
+    ldr     x0, [DSP], #8
+    bl      bn_met              // returns uint64_t in x0
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNBEX ( n -- noun )   2^n as atom noun; n is raw integer
+defcode "BNBEX", 5, bnbex, 0
+    ldr     x0, [DSP], #8
+    bl      bn_bex
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNLSH ( noun n -- noun )   left shift noun by n bits; n is raw integer
+defcode "BNLSH", 5, bnlsh, 0
+    ldr     x1, [DSP], #8      // k (raw integer)
+    ldr     x0, [DSP], #8      // noun
+    bl      bn_lsh
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNRSH ( noun n -- noun )   right shift noun by n bits; n is raw integer
+defcode "BNRSH", 5, bnrsh, 0
+    ldr     x1, [DSP], #8      // k (raw integer)
+    ldr     x0, [DSP], #8      // noun
+    bl      bn_rsh
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNOR ( n1 n2 -- n )   bitwise OR of two atom nouns
+defcode "BNOR", 4, bnor, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_or
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNAND ( n1 n2 -- n )   bitwise AND of two atom nouns
+defcode "BNAND", 5, bnand, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_and
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNXOR ( n1 n2 -- n )   bitwise XOR of two atom nouns
+defcode "BNXOR", 5, bnxor, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_xor
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNMUL ( n1 n2 -- n )   bignum multiplication
+defcode "BNMUL", 5, bnmul, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_mul
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JAM / CUE  (Phase 5a — noun serialization / deserialization)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// JAM ( noun -- atom )   serialize noun to atom via jam encoding
+defcode "JAM", 3, jam_word, 0
+    ldr     x0, [DSP], #8
+    bl      jam
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// CUE ( atom -- noun )   deserialize atom back to noun via cue decoding
+defcode "CUE", 3, cue_word, 0
+    ldr     x0, [DSP], #8
+    bl      cue
     str     x0, [DSP, #-8]!
     NEXT
 

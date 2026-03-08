@@ -109,12 +109,94 @@ static int sock_match(noun cape, noun data, noun subject) {
         && sock_match(cc->tail, dc->tail, sc->tail);
 }
 
-/* ── Hot state (Phase 11d: populated with real jets) ─────────────────────── */
+/* ── Jet implementations ─────────────────────────────────────────────────── */
 
+/*
+ * Each jet receives the full core and extracts its sample via slot().
+ * Gate convention: sample = slot(6, core)
+ *   Unary:  arg  = slot(6, core)
+ *   Binary: a    = slot(12, core),  b = slot(13, core)
+ */
+
+static noun jet_dec(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun sample = slot(direct(6), core);
+    if (!noun_is_atom(sample)) nock_crash("jet dec: sample not atom");
+    return bn_dec(sample);
+}
+
+static noun jet_add(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun a = slot(direct(12), core);
+    noun b = slot(direct(13), core);
+    if (!noun_is_atom(a) || !noun_is_atom(b)) nock_crash("jet add: non-atom args");
+    return bn_add(a, b);
+}
+
+static noun jet_sub(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun a = slot(direct(12), core);
+    noun b = slot(direct(13), core);
+    if (!noun_is_atom(a) || !noun_is_atom(b)) nock_crash("jet sub: non-atom args");
+    return bn_sub(a, b);
+}
+
+static noun jet_mul(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun a = slot(direct(12), core);
+    noun b = slot(direct(13), core);
+    if (!noun_is_atom(a) || !noun_is_atom(b)) nock_crash("jet mul: non-atom args");
+    return bn_mul(a, b);
+}
+
+static noun jet_lth(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun a = slot(direct(12), core);
+    noun b = slot(direct(13), core);
+    return bn_cmp(a, b) < 0 ? NOUN_YES : NOUN_NO;
+}
+
+static noun jet_gth(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun a = slot(direct(12), core);
+    noun b = slot(direct(13), core);
+    return bn_cmp(a, b) > 0 ? NOUN_YES : NOUN_NO;
+}
+
+static noun jet_lte(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun a = slot(direct(12), core);
+    noun b = slot(direct(13), core);
+    return bn_cmp(a, b) <= 0 ? NOUN_YES : NOUN_NO;
+}
+
+static noun jet_gte(noun core, const wilt_t *jets, sky_fn_t sky) {
+    (void)jets; (void)sky;
+    noun a = slot(direct(12), core);
+    noun b = slot(direct(13), core);
+    return bn_cmp(a, b) >= 0 ? NOUN_YES : NOUN_NO;
+}
+
+/* ── Hot state ────────────────────────────────────────────────────────────── */
+
+/*
+ * Keyed on Urbit cord values (LSB = first char of name).
+ * Jets are matched against label atoms registered via %wild hints.
+ * Cord values: each char contributes 8 bits, LSB = first character.
+ *   e.g. %dec = 'd' + 'e'<<8 + 'c'<<16 = 100 + 101*256 + 99*65536 = 6514020
+ */
 typedef struct { uint64_t label_cord; jet_fn_t fn; } hot_entry_t;
 
 static const hot_entry_t hot_state[] = {
-    { 0, NULL }     /* sentinel — no jets yet */
+    { 6514020, jet_dec },   /* %dec */
+    { 6579297, jet_add },   /* %add */
+    { 6452595, jet_sub },   /* %sub */
+    { 7107949, jet_mul },   /* %mul */
+    { 6845548, jet_lth },   /* %lth */
+    { 6845543, jet_gth },   /* %gth */
+    { 6648940, jet_lte },   /* %lte */
+    { 6648935, jet_gte },   /* %gte */
+    { 0, NULL }             /* sentinel */
 };
 
 static jet_fn_t hot_lookup(noun label) {

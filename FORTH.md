@@ -239,8 +239,16 @@ All arithmetic operates on atom nouns; see `BIGNUM.md` for the full implementati
 | Word    | Stack effect          | Notes                                                          |
 |---------|-----------------------|----------------------------------------------------------------|
 | `N.`    | `( noun -- )`         | Print atom as decimal digits + space                          |
-| `BN+`   | `( n1 n2 -- n )`      | Add two atom nouns; result is a canonical atom noun           |
-| `BNDEC` | `( noun -- noun )`    | Decrement atom noun by 1; crashes on zero                     |
+| `BN+`   | `( n1 n2 -- n )`      | Add two atom nouns                                            |
+| `BNDEC` | `( noun -- noun )`    | Decrement atom; crashes on zero                               |
+| `BNMET` | `( noun -- n )`       | Significant bit length (raw integer); 0 for atom 0           |
+| `BNBEX` | `( n -- noun )`       | 2^n as atom noun; n is raw integer                            |
+| `BNLSH` | `( noun n -- noun )`  | Left-shift atom by n bits; n is raw integer                   |
+| `BNRSH` | `( noun n -- noun )`  | Right-shift atom by n bits; n is raw integer                  |
+| `BNOR`  | `( n1 n2 -- n )`      | Bitwise OR                                                    |
+| `BNAND` | `( n1 n2 -- n )`      | Bitwise AND                                                   |
+| `BNXOR` | `( n1 n2 -- n )`      | Bitwise XOR                                                   |
+| `BNMUL` | `( n1 n2 -- n )`      | Multiply two atom nouns                                       |
 
 > Note: the REPL number parser is 64-bit native. Atoms larger than 2^62-1 must be constructed via Nock (repeated `op 4`) or `BN+`, not by typing large decimal literals.
 

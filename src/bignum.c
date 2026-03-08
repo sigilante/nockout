@@ -262,3 +262,140 @@ noun bn_from_decimal(const char *buf, int len) {
     }
     return bn_normalize(scratch, sz);
 }
+
+/* ── bn_met ───────────────────────────────────────────────────────────────── */
+
+uint64_t bn_met(noun a) {
+    if (!noun_is_atom(a)) nock_crash("bn_met: cell");
+    if (noun_is_direct(a)) {
+        uint64_t v = direct_val(a);
+        if (v == 0) return 0;
+        return 64 - (uint64_t)__builtin_clzll(v);
+    }
+    atom_t *at = atom_of(a);
+    uint64_t top = at->limbs[at->size - 1];
+    return 64 * (at->size - 1) + (64 - (uint64_t)__builtin_clzll(top));
+}
+
+/* ── bn_bex ───────────────────────────────────────────────────────────────── */
+
+noun bn_bex(uint64_t k) {
+    uint64_t word_idx = k / 64;
+    uint64_t bit_idx  = k % 64;
+    if (word_idx >= BN_MAX_LIMBS) nock_crash("bn_bex: exponent too large");
+    uint64_t scratch[BN_MAX_LIMBS];
+    for (uint64_t i = 0; i < word_idx + 1; i++) scratch[i] = 0;
+    scratch[word_idx] = 1ULL << bit_idx;
+    return bn_normalize(scratch, word_idx + 1);
+}
+
+/* ── bn_lsh ───────────────────────────────────────────────────────────────── */
+
+noun bn_lsh(noun a, uint64_t k) {
+    if (k == 0) return a;
+    uint64_t la[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la);
+    uint64_t word_shift = k / 64;
+    uint64_t bit_shift  = k % 64;
+    uint64_t result_size = sa + word_shift + (bit_shift > 0 ? 1 : 0);
+    if (result_size > BN_MAX_LIMBS) nock_crash("bn_lsh: result too large");
+    uint64_t result[BN_MAX_LIMBS];
+    for (uint64_t i = 0; i < result_size; i++) result[i] = 0;
+    if (bit_shift == 0) {
+        for (uint64_t i = 0; i < sa; i++) result[i + word_shift] = la[i];
+    } else {
+        uint64_t carry = 0;
+        for (uint64_t i = 0; i < sa; i++) {
+            result[i + word_shift] = (la[i] << bit_shift) | carry;
+            carry = la[i] >> (64 - bit_shift);
+        }
+        if (carry) result[sa + word_shift] = carry;
+    }
+    return bn_normalize(result, result_size);
+}
+
+/* ── bn_rsh ───────────────────────────────────────────────────────────────── */
+
+noun bn_rsh(noun a, uint64_t k) {
+    if (k == 0) return a;
+    uint64_t la[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la);
+    uint64_t word_shift = k / 64;
+    uint64_t bit_shift  = k % 64;
+    if (word_shift >= sa) return NOUN_ZERO;
+    uint64_t result_size = sa - word_shift;
+    uint64_t result[BN_MAX_LIMBS];
+    if (bit_shift == 0) {
+        for (uint64_t i = 0; i < result_size; i++)
+            result[i] = la[i + word_shift];
+    } else {
+        for (uint64_t i = 0; i < result_size; i++) {
+            result[i] = la[i + word_shift] >> bit_shift;
+            if (i + word_shift + 1 < sa)
+                result[i] |= la[i + word_shift + 1] << (64 - bit_shift);
+        }
+    }
+    return bn_normalize(result, result_size);
+}
+
+/* ── Bitwise ops ─────────────────────────────────────────────────────────── */
+
+noun bn_or(noun a, noun b) {
+    uint64_t la[BN_MAX_LIMBS], lb[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la), sb = atom_limbs(b, lb);
+    uint64_t sr = sa > sb ? sa : sb;
+    uint64_t result[BN_MAX_LIMBS];
+    for (uint64_t i = 0; i < sr; i++)
+        result[i] = (i < sa ? la[i] : 0) | (i < sb ? lb[i] : 0);
+    return bn_normalize(result, sr);
+}
+
+noun bn_and(noun a, noun b) {
+    uint64_t la[BN_MAX_LIMBS], lb[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la), sb = atom_limbs(b, lb);
+    uint64_t sr = sa < sb ? sa : sb;  /* AND: zero-extension kills higher bits */
+    uint64_t result[BN_MAX_LIMBS];
+    for (uint64_t i = 0; i < sr; i++) result[i] = la[i] & lb[i];
+    return bn_normalize(result, sr);
+}
+
+noun bn_xor(noun a, noun b) {
+    uint64_t la[BN_MAX_LIMBS], lb[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la), sb = atom_limbs(b, lb);
+    uint64_t sr = sa > sb ? sa : sb;
+    uint64_t result[BN_MAX_LIMBS];
+    for (uint64_t i = 0; i < sr; i++)
+        result[i] = (i < sa ? la[i] : 0) ^ (i < sb ? lb[i] : 0);
+    return bn_normalize(result, sr);
+}
+
+/* ── bn_mul ──────────────────────────────────────────────────────────────── */
+
+noun bn_mul(noun a, noun b) {
+    uint64_t la[BN_MAX_LIMBS], lb[BN_MAX_LIMBS];
+    uint64_t sa = atom_limbs(a, la), sb = atom_limbs(b, lb);
+
+    /* Zero fast path */
+    if (sa == 1 && la[0] == 0) return NOUN_ZERO;
+    if (sb == 1 && lb[0] == 0) return NOUN_ZERO;
+
+    uint64_t sr = sa + sb;
+    uint64_t result[BN_MAX_LIMBS * 2];
+    for (uint64_t i = 0; i < sr; i++) result[i] = 0;
+
+    for (uint64_t i = 0; i < sa; i++) {
+        uint64_t carry = 0;
+        for (uint64_t j = 0; j < sb; j++) {
+            __uint128_t prod = (__uint128_t)la[i] * lb[j] + result[i+j] + carry;
+            result[i+j] = (uint64_t)prod;
+            carry       = (uint64_t)(prod >> 64);
+        }
+        /* Propagate remaining carry upward */
+        for (uint64_t k = i + sb; carry; k++) {
+            __uint128_t sum = (__uint128_t)result[k] + carry;
+            result[k] = (uint64_t)sum;
+            carry     = (uint64_t)(sum >> 64);
+        }
+    }
+    return bn_normalize(result, sr);
+}

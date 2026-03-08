@@ -74,3 +74,32 @@ noun bn_sub(noun a, noun b);   /* subtraction a-b; crashes if a < b    */
 
 /* Compare two atoms.  Returns -1 / 0 / +1  (a < b / a == b / a > b). */
 int  bn_cmp(noun a, noun b);
+
+/* ── Bit ops and shifts ───────────────────────────────────────────────────── */
+
+/* bn_met: number of significant bits.
+ *   bn_met(0) = 0,  bn_met(1) = 1,  bn_met(2) = bn_met(3) = 2, ...
+ *   Equivalent to Hoon (met 0 a).  Returns a raw uint64_t, not a noun. */
+uint64_t bn_met(noun a);
+
+/* bn_bex: 2^k as a canonical atom noun.  Crashes if k >= BN_MAX_LIMBS*64. */
+noun bn_bex(uint64_t k);
+
+/* bn_lsh / bn_rsh: left / right shift atom a by k bits.
+ *   bn_lsh crashes if the result exceeds BN_MAX_LIMBS limbs.
+ *   bn_rsh returns NOUN_ZERO if k >= bn_met(a). */
+noun bn_lsh(noun a, uint64_t k);
+noun bn_rsh(noun a, uint64_t k);
+
+/* Bitwise OR, AND, XOR.  Operands zero-extended to match width. */
+noun bn_or (noun a, noun b);
+noun bn_and(noun a, noun b);
+noun bn_xor(noun a, noun b);
+
+/* ── Multiplication ───────────────────────────────────────────────────────── */
+
+/* Schoolbook O(n²) multiplication.
+ * Result may have up to BN_MAX_LIMBS*2 limbs; bn_normalize handles it.
+ * Note: inputs are clipped to BN_MAX_LIMBS limbs by atom_limbs(); atoms
+ * larger than 4096 bits have degraded accuracy as multiplication inputs. */
+noun bn_mul(noun a, noun b);

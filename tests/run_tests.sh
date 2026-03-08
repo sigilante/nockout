@@ -39,7 +39,11 @@ TD() {  # TD "description"  "expected-decimal-string"  "forth expression"
 
 # ── Preamble (defines helpers, produces no numeric output) ─────────────────
 PREAMBLE=': N>N >NOUN ;
-: C>N N>N SWAP N>N SWAP CONS ;'
+: C>N N>N SWAP N>N SWAP CONS ;
+: JCORE1 0 N>N CONS 0 N>N SWAP CONS ;
+: JCORE2 CONS 0 N>N CONS 0 N>N SWAP CONS ;
+: JD 1 N>N SWAP CONS 2 N>N SWAP CONS 9 N>N SWAP CONS ;
+: JWRAP SWAP 1 N>N 0 N>N CONS CONS 0 N>N CONS 1 N>N SWAP CONS 1684826487 N>N SWAP CONS SWAP CONS 11 N>N SWAP CONS ;'
 
 # ── Slot / op 0 ────────────────────────────────────────────────────────────
 # SLOT word direct
@@ -312,6 +316,132 @@ TD "N.: 2^63"                  "9223372036854775808" \
     "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
      0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
      BN+  N."
+
+# ── Phase 4d: bit ops, shifts, multiply ───────────────────────────────────
+# bn_met (result is raw integer, use .)
+T "bn_met: 0"              "0000000000000000" "0 N>N BNMET ."
+T "bn_met: 1"              "0000000000000001" "1 N>N BNMET ."
+T "bn_met: 4"              "0000000000000003" "4 N>N BNMET ."
+T "bn_met: 2^62-1"         "000000000000003E" "4611686018427387903 N>N BNMET ."
+# bn_met on indirect atom 2^62 → 63 bits
+T "bn_met: 2^62 indirect"  "000000000000003F" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  BNMET ."
+
+# bn_bex (result is atom noun)
+T "bn_bex: 0 = 1"          "0000000000000001" "0 BNBEX NOUN> ."
+T "bn_bex: 3 = 8"          "0000000000000008" "3 BNBEX NOUN> ."
+T "bn_bex: 62 = indirect"  "FFFFFFFFFFFFFFFF" "62 BNBEX ATOM? ."
+# bex(62) == inc(max_direct): lsh(1,62) == inc(2^62-1)
+T "bn_bex: 62 value"       "FFFFFFFFFFFFFFFF" \
+    "62 BNBEX  0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  =NOUN ."
+
+# bn_lsh
+T "bn_lsh: no-op"          "0000000000000007" "7 N>N 0 BNLSH NOUN> ."
+T "bn_lsh: by 3"           "0000000000000038" "7 N>N 3 BNLSH NOUN> ."
+T "bn_lsh: 1<<62 indirect" "FFFFFFFFFFFFFFFF" "1 N>N 62 BNLSH ATOM? ."
+# lsh(1,62) == bex(62)
+T "bn_lsh: eq bex"         "FFFFFFFFFFFFFFFF" "1 N>N 62 BNLSH  62 BNBEX  =NOUN ."
+
+# bn_rsh
+T "bn_rsh: no-op"          "0000000000000007" "7 N>N 0 BNRSH NOUN> ."
+T "bn_rsh: by 3"           "0000000000000001" "8 N>N 3 BNRSH NOUN> ."
+T "bn_rsh: full shift"     "0000000000000000" "1 N>N 1 BNRSH NOUN> ."
+# lsh then rsh roundtrip: rsh(lsh(7,10), 10) = 7
+T "bn_lsh/rsh roundtrip"   "0000000000000007" "7 N>N 10 BNLSH 10 BNRSH NOUN> ."
+# rsh on indirect: rsh(2^62, 1) = 2^61 (direct)
+T "bn_rsh: indirect→direct" "2000000000000000" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  1 BNRSH NOUN> ."
+
+# bn_or / bn_and / bn_xor
+T "bn_or:  5|3=7"          "0000000000000007" "5 N>N 3 N>N BNOR  NOUN> ."
+T "bn_and: 5&3=1"          "0000000000000001" "5 N>N 3 N>N BNAND NOUN> ."
+T "bn_xor: 5^3=6"          "0000000000000006" "5 N>N 3 N>N BNXOR NOUN> ."
+# or with indirect: or(2^62, 1) should be indirect (> 2^62-1)
+T "bn_or: indirect result" "FFFFFFFFFFFFFFFF" \
+    "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK \
+     1 N>N  BNOR ATOM? ."
+# xor is own inverse: xor(xor(a,b),b) = a
+T "bn_xor: self-inverse"   "FFFFFFFFFFFFFFFF" \
+    "42 N>N  99 N>N  BNXOR  99 N>N  BNXOR  42 N>N  =NOUN ."
+
+# bn_mul
+T "bn_mul: 0*5=0"          "0000000000000000" "0 N>N 5 N>N BNMUL NOUN> ."
+T "bn_mul: 3*4=12"         "000000000000000C" "3 N>N 4 N>N BNMUL NOUN> ."
+T "bn_mul: 6*7=42"         "000000000000002A" "6 N>N 7 N>N BNMUL NOUN> ."
+# 2^31 * 2^31 = 2^62 (indirect)
+T "bn_mul: 2^31*2^31 indirect" "FFFFFFFFFFFFFFFF" \
+    "2147483648 N>N  2147483648 N>N  BNMUL ATOM? ."
+# 2^31 * 2^31 == bex(62)
+T "bn_mul: 2^31*2^31==bex(62)" "FFFFFFFFFFFFFFFF" \
+    "2147483648 N>N  2147483648 N>N  BNMUL  62 BNBEX  =NOUN ."
+# mul is lsh by k for power-of-two: 7 * 8 = lsh(7, 3)
+T "bn_mul: eq lsh"         "FFFFFFFFFFFFFFFF" \
+    "7 N>N 8 N>N BNMUL  7 N>N 3 BNLSH  =NOUN ."
+TD "bn_mul: 2^31*2^31 decimal" "4611686018427387904" \
+    "2147483648 N>N  2147483648 N>N  BNMUL  N."
+
+# ── jam / cue (Phase 5a) ────────────────────────────────────────────────────
+# jam encoding: verified against Python pynoun / Hoon reference
+# jam(0)=2  jam(1)=12  jam(2)=72  jam(42)=5456  jam([0 0])=41  jam([1 2])=4657
+TD "jam: atom 0"            "2"    "0 N>N JAM N."
+TD "jam: atom 1"            "12"   "1 N>N JAM N."
+TD "jam: atom 2"            "72"   "2 N>N JAM N."
+TD "jam: atom 42"           "5456" "42 N>N JAM N."
+TD "jam: [0 0]"             "41"   "0 N>N 0 N>N CONS JAM N."
+TD "jam: [1 2]"             "4657" "1 N>N 2 N>N CONS JAM N."
+
+# cue: decode jam output back to original noun
+T "cue: 2 -> 0"             "0000000000000000" "2 N>N CUE NOUN> ."
+T "cue: 12 -> 1"            "0000000000000001" "12 N>N CUE NOUN> ."
+T "cue: 41 head -> 0"       "0000000000000000" "41 N>N CUE CAR NOUN> ."
+T "cue: 41 tail -> 0"       "0000000000000000" "41 N>N CUE CDR NOUN> ."
+T "cue: 4657 head -> 1"     "0000000000000001" "4657 N>N CUE CAR NOUN> ."
+T "cue: 4657 tail -> 2"     "0000000000000002" "4657 N>N CUE CDR NOUN> ."
+
+# round-trip: cue(jam(n)) == n
+T "rt: jam(cue(41))==41"    "FFFFFFFFFFFFFFFF" \
+    "41 N>N CUE JAM  41 N>N  =NOUN ."
+T "rt: jam(cue(4657))==4657" "FFFFFFFFFFFFFFFF" \
+    "4657 N>N CUE JAM  4657 N>N  =NOUN ."
+T "rt: cue(jam([1 2]))==[1 2]" "FFFFFFFFFFFFFFFF" \
+    "1 N>N 2 N>N CONS  DUP JAM CUE  =NOUN ."
+
+# ── Phase 5b: %wild jet dispatch ──────────────────────────────────────────
+# JCORE1/JCORE2 build synthetic gate cores; JD wraps them in op9;
+# JWRAP adds the op11 %wild registration so jets fire via hot_state[].
+# Cord values (LSB = first char): %dec=6514020 %add=6579297 %sub=6452595
+#   %mul=7107949 %lth=6845548 %gth=6845543 %lte=6648940 %gte=6648935
+
+T "jet dec: dec(5)=4"          "0000000000000004" \
+    "0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  NOCK  NOUN> ."
+T "jet dec: dec(1)=0"          "0000000000000000" \
+    "0 N>N  6514020 N>N  1 N>N  JCORE1 JD JWRAP  NOCK  NOUN> ."
+T "jet add: add(3,4)=7"        "0000000000000007" \
+    "0 N>N  6579297 N>N  3 N>N  4 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet add: add(0,0)=0"        "0000000000000000" \
+    "0 N>N  6579297 N>N  0 N>N  0 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet sub: sub(10,3)=7"       "0000000000000007" \
+    "0 N>N  6452595 N>N  10 N>N  3 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet sub: sub(5,5)=0"        "0000000000000000" \
+    "0 N>N  6452595 N>N  5 N>N  5 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet mul: mul(6,7)=42"       "000000000000002A" \
+    "0 N>N  7107949 N>N  6 N>N  7 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet mul: mul(0,99)=0"       "0000000000000000" \
+    "0 N>N  7107949 N>N  0 N>N  99 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet lth: lth(3,4)=YES"      "0000000000000000" \
+    "0 N>N  6845548 N>N  3 N>N  4 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet lth: lth(4,3)=NO"       "0000000000000001" \
+    "0 N>N  6845548 N>N  4 N>N  3 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet gth: gth(5,3)=YES"      "0000000000000000" \
+    "0 N>N  6845543 N>N  5 N>N  3 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet lte: lte(3,3)=YES"      "0000000000000000" \
+    "0 N>N  6648940 N>N  3 N>N  3 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet lte: lte(4,3)=NO"       "0000000000000001" \
+    "0 N>N  6648940 N>N  4 N>N  3 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet gte: gte(5,5)=YES"      "0000000000000000" \
+    "0 N>N  6648935 N>N  5 N>N  5 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
+T "jet gte: gte(2,5)=NO"       "0000000000000001" \
+    "0 N>N  6648935 N>N  2 N>N  5 N>N  JCORE2 JD JWRAP  NOCK  NOUN> ."
 
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"
