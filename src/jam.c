@@ -36,7 +36,7 @@ static void jb_write_atom(jambuf_t *b, noun a, uint64_t n) {
         jb_write_n(b, direct_val(a), n);
         return;
     }
-    atom_t *at = (atom_t *)(uintptr_t)indirect_ptr(a);
+    atom_t *at = atom_store_get(indirect_hash(a));
     for (uint64_t i = 0; i < n; i++) {
         uint64_t limb = i >> 6, off = i & 63;
         int bit = (limb < at->size) ? (int)((at->limbs[limb] >> off) & 1) : 0;
@@ -170,10 +170,10 @@ noun jam(noun n) {
 /* Read a single bit from atom a at bit position pos. */
 static int atom_bit_at(noun a, uint64_t pos) {
     if (noun_is_direct(a)) {
-        if (pos >= 62) return 0;
+        if (pos >= 63) return 0;   /* direct atoms use bits 62:0 */
         return (int)((direct_val(a) >> pos) & 1);
     }
-    atom_t *at = (atom_t *)(uintptr_t)indirect_ptr(a);
+    atom_t *at = atom_store_get(indirect_hash(a));
     uint64_t limb = pos >> 6, off = pos & 63;
     if (limb >= at->size) return 0;
     return (int)((at->limbs[limb] >> off) & 1);

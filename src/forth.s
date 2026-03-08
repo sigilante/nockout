@@ -1451,38 +1451,38 @@ defcode "CDR", 3, cdr, 0
     str     x1, [DSP, #-8]!
     NEXT
 
-// >NOUN ( n -- noun )   wrap raw integer as a direct atom noun (tag=01)
+// >NOUN ( n -- noun )   wrap raw integer as a direct atom noun (bit63=0)
+// In the new scheme direct(v) = v, so just clear bit 63.
 defcode ">NOUN", 5, to_noun, 0
     ldr     x0, [DSP]
-    lsl     x0, x0, #2          // clear top 2 bits
-    lsr     x0, x0, #2          // n & ~TAG_MASK
-    movz    x1, #0x4000, lsl #48 // TAG_DIRECT = 1<<62
-    orr     x0, x0, x1
+    lsl     x0, x0, #1          // clear bit 63
+    lsr     x0, x0, #1
     str     x0, [DSP]
     NEXT
 
 // NOUN> ( noun -- n )   extract raw integer from a direct atom noun
+// direct_val(n) = n & 0x7FFF..., i.e. clear bit 63.
 defcode "NOUN>", 5, from_noun, 0
     ldr     x0, [DSP]
-    lsl     x0, x0, #2          // clear top 2 tag bits
-    lsr     x0, x0, #2          // = n & ~TAG_MASK
+    lsl     x0, x0, #1          // clear bit 63
+    lsr     x0, x0, #1
     str     x0, [DSP]
     NEXT
 
-// ATOM? ( noun -- flag )   true (-1) if atom (tag≠00), false (0) if cell
+// ATOM? ( noun -- flag )   true (-1) if atom (bits 63:62 ≠ 11), false (0) if cell
 defcode "ATOM?", 5, isatom, 0
     ldr     x0, [DSP]
     lsr     x1, x0, #62         // top 2 bits → positions 1:0
-    cmp     x1, #0
+    cmp     x1, #3
     csetm   x1, ne              // ne → -1 (atom), eq → 0 (cell)
     str     x1, [DSP]
     NEXT
 
-// CELL? ( noun -- flag )   true (-1) if cell (tag=00), false (0) if atom
+// CELL? ( noun -- flag )   true (-1) if cell (bits 63:62 = 11), false (0) if atom
 defcode "CELL?", 5, iscell, 0
     ldr     x0, [DSP]
     lsr     x1, x0, #62         // top 2 bits → positions 1:0
-    cmp     x1, #0
+    cmp     x1, #3
     csetm   x1, eq              // eq → -1 (cell), ne → 0 (atom)
     str     x1, [DSP]
     NEXT
@@ -1496,13 +1496,8 @@ defcode "=NOUN", 5, noueq, 0
     str     x0, [DSP, #-8]!
     NEXT
 
-// HATOM ( noun -- noun' )   compute BLAKE3 hash of indirect atom;
-//   fills atom->blake3[], returns updated noun with 30-bit hash prefix set.
-//   Direct and cell nouns are passed through unchanged.
+// HATOM ( noun -- noun' )   no-op in new scheme: atoms are always content-addressed.
 defcode "HATOM", 5, hash_atom_word, 0
-    ldr     x0, [DSP], #8       // pop noun
-    bl      hash_atom           // noun.c: fills blake3[], returns noun with prefix
-    str     x0, [DSP, #-8]!    // push result
     NEXT
 
 // PILL ( -- atom )   load jammed atom from PILL_BASE (QEMU -device loader).

@@ -8,12 +8,12 @@
  * Representation (maintained as invariants by every function here):
  *   - Limbs are little-endian uint64_t: limbs[0] = least significant 64 bits.
  *   - No trailing zero limbs: limbs[size-1] != 0 when size > 1.
- *   - Canonical form: any value < 2^62 is ALWAYS a direct atom.
- *     alloc_indirect is never called when the value fits in 62 bits.
+ *   - Canonical form: any value < 2^63 is ALWAYS a direct atom.
+ *     make_atom() never returns indirect when the value fits in 63 bits.
  *
- * The boundary is exactly 2^62 = 0x4000_0000_0000_0000.
- * Incrementing a direct atom with value 2^62-1 produces an indirect atom
- * with size=1, limbs[0]=2^62.
+ * The boundary is exactly 2^63 = 0x8000_0000_0000_0000.
+ * Incrementing a direct atom with value 2^63-1 produces an indirect atom
+ * with size=1, limbs[0]=2^63.
  *
  * All functions return a properly tagged, canonical noun.
  */
