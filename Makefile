@@ -10,6 +10,7 @@ VPATH   = $(SRCDIR)
 
 CFLAGS  = -Wall -O2 -ffreestanding -nostdlib -nostartfiles \
           -mcpu=cortex-a53 -mgeneral-regs-only \
+          -fno-pic -fno-stack-protector \
           -I$(SRCDIR)
 LDFLAGS = -T $(SRCDIR)/linker.ld -nostdlib
 

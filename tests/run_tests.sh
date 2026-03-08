@@ -449,8 +449,8 @@ for line in "${TLINES[@]}"; do
     INPUT+=$'\n'"$line"
 done
 
-RAW=$(printf '%s\n' "$INPUT" | \
-    timeout 15 qemu-system-aarch64 -machine raspi3b -kernel kernel8.img \
+RAW=$({ printf '%s\n' "$INPUT"; sleep 2; printf '\001x'; } | \
+    timeout 30 qemu-system-aarch64 -machine raspi3b -kernel kernel8.img \
         -display none -nographic 2>/dev/null || true)
 
 # Extract results from output lines.
