@@ -10,7 +10,8 @@ All tests live in `tests/run_tests.sh`. Run with `make test`.
 
 All tests run in a **single QEMU session** for speed. The harness builds one long Forth input
 string (preamble + all test expressions concatenated), pipes it into QEMU, then parses the
-output line by line.
+output line by line. After sending all input the harness sends the QEMU monitor quit sequence
+(`Ctrl-A X`) so QEMU exits cleanly rather than waiting for a timeout.
 
 Each test expression must leave exactly one value on the stack and then print it. The harness
 recognizes two output formats:
@@ -36,10 +37,15 @@ TD "description"  "decimal-string"  "forth expression ending with N."
 
 ### Preamble
 
-Two helper words are defined before any test expression runs:
+Several helper words are defined before any test expression runs:
+
 ```forth
-: N>N >NOUN ;       \ push a Forth integer as a noun
-: C>N N>N SWAP N>N SWAP CONS ;   \ ( a b -- [a b] noun cell )
+: N>N >NOUN ;
+: C>N N>N SWAP N>N SWAP CONS ;
+: JCORE1 0 N>N CONS 0 N>N SWAP CONS ;
+: JCORE2 CONS 0 N>N CONS 0 N>N SWAP CONS ;
+: JD 1 N>N SWAP CONS 2 N>N SWAP CONS 9 N>N SWAP CONS ;
+: JWRAP ... ;   \ wraps a core in a %wild op11 hint for jet dispatch
 ```
 
 ### Nock formula construction pattern
@@ -67,7 +73,8 @@ Test count in the pass/fail summary updates automatically.
   (e.g. `%slog` = `1735355507`).
 - **One output per test**: each expression must print exactly one token followed by `ok`.
   Extra prints (e.g. from `%slog`) appear in QEMU output but are not matched by the parser.
-- **15-second timeout**: the entire suite must finish within 15 seconds of QEMU start.
+- **30-second timeout**: safety net; in practice the suite exits in ~3 seconds via the
+  Ctrl-A X quit sequence after all tests complete.
 
 ---
 
@@ -81,8 +88,10 @@ REPL, `:` `;`, `IF`/`ELSE`/`THEN`, `BEGIN`/`UNTIL`/`AGAIN`/`WHILE`/`REPEAT`, `RE
 Not implemented (not needed for Nock): `."`, `S"`, `DOES>`, `DO`/`LOOP`.
 
 ### Phase 2 — Noun Primitives
-`noun.h`/`noun.c`/`nock.c`; Forth words: `>NOUN` `NOUN>` `CONS` `CAR` `CDR` `ATOM?` `CELL?` `=NOUN` `SLOT` `NOCK`.
-Noun representation: direct atoms (< 2^62, tag=01), indirect atoms (heap ptr + BLAKE3 prefix, tag=10), cells (heap ptr, tag=00).
+`noun.h`/`noun.c`/`nock.c`; Forth words: `>NOUN` `NOUN>` `CONS` `CAR` `CDR` `ATOM?` `CELL?`
+`=NOUN` `SLOT` `NOCK`.
+Noun representation: direct atoms (< 2^62, tag=01), indirect atoms (heap ptr + BLAKE3 prefix,
+tag=10), cells (heap ptr, tag=00).
 
 ### Phase 3 — Nock Evaluator
 Opcodes 0–10, tail-call optimization (goto loop), `hax()` tree edit.
@@ -93,7 +102,8 @@ Jet architecture: no `%fast`; `%wild` is sole registration mechanism; hot state 
 Evaluator signature: `noun nock(subject, formula, const wilt_t *jets, sky_fn_t sky)`.
 
 ### Phase 3c — setjmp/longjmp
-Bare-metal AArch64 `setjmp`/`longjmp` (`src/setjmp.s`). `nock_crash()` longjmps to QUIT restart point.
+Bare-metal AArch64 `setjmp`/`longjmp` (`src/setjmp.s`). `nock_crash()` longjmps to QUIT
+restart point on any fatal error.
 
 ### Phase 4b — BLAKE3
 `src/blake3.c`; Forth words: `HATOM`, `B3OK`; 7 official test vectors pass.
@@ -111,13 +121,8 @@ Forth words: `BNMET`, `BNBEX`, `BNLSH`, `BNRSH`, `BNOR`, `BNAND`, `BNXOR`, `BNMU
 `src/jam.c`/`src/jam.h`: `noun jam(noun n)` and `noun cue(noun a)`.
 Forth words: `JAM` `( noun -- atom )`, `CUE` `( atom -- noun )`.
 Encoding: tag 0=atom, 01=cell, 11=back-reference; `mat`/`rub` self-describing integer encoding.
-126 tests passing.
 
----
-
-## Remaining Phases
-
-### Phase 5b — Hot Jets ✓ COMPLETE
+### Phase 5b — Hot Jets
 `hot_state[]` in `nock.c` populated with 8 jets, all backed by existing bignum functions:
 
 | Jet   | C function | Label cord |
@@ -132,13 +137,36 @@ Encoding: tag 0=atom, 01=cell, 11=back-reference; `mat`/`rub` self-describing in
 | `gte` | `bn_cmp`   | 6648935    |
 
 Jets are keyed on **label cord atoms** (not battery hashes) and registered via `%wild` hints.
-`%wild` cord = 1684826487 = 0x646C6977. (Note: 1684956535 = "wend" — wrong.)
+`%wild` cord = 1684826487. Gate convention: sample = `slot(6, core)`; binary args at
+`slot(12, core)` / `slot(13, core)`.
 
-Gate convention: sample = `slot(6, core)`; binary args at `slot(12, core)` / `slot(13, core)`.
+**141 tests passing.**
 
-Test helpers added to preamble: `JCORE1`, `JCORE2`, `JD`, `JWRAP` — build synthetic gate
-cores and wrap them with a `%wild` op11 hint so jets fire via op9 dispatch.
-141 tests passing.
+### Phase 5c — PILL: QEMU File Loader
+`PILL` Forth word loads a jammed atom from physical address `0x10000000`, placed there by
+QEMU's `-device loader` at startup. Enables loading arbitrary nouns (formulas, cores, pills)
+without typing them at the REPL.
+
+Pill file format (little-endian):
+- bytes 0–7: `uint64_t` = byte count of jam data
+- bytes 8+: raw jam bytes
+
+```
+make run-pill PILL=pill.bin
+```
+
+In the REPL:
+```forth
+PILL CUE           \ decode jammed noun
+DUP CAR SWAP CDR   \ split [subject formula]
+NOCK               \ evaluate
+```
+
+`PILL` returns atom `0` if no pill was loaded (QEMU zeroes RAM at startup).
+
+---
+
+## Remaining Phases
 
 ### Phase 6 — Kernel Loop
 Replace the Forth REPL as the top-level driver with a proper Nock kernel loop:
@@ -148,6 +176,9 @@ Replace the Forth REPL as the top-level driver with a proper Nock kernel loop:
 - Update subject and repeat.
 
 This is the minimal "Arvo-shaped" event loop.
+
+**Prerequisite**: bignum `div` and `mod` (needed by most real Nock cores); additional jets
+for the Hoon standard library arithmetic layer.
 
 ### Phase 7 — SKA (Subject Knowledge Analysis)
 Implement the partial Nock interpreter described in Afonin ~dozreg-toplud, UTJ v3i1.
@@ -160,11 +191,18 @@ Outputs:
 2. `$cape` subject mask: which axes are used as code (needed for correct cache keying).
 
 Key implementation notes:
-- **Direct calls**: annotate Nock 2 sites with a pointer to the callee's compiled form; skip `nock_eval` entirely (~1.7× speedup per paper).
-- **Compile-time jet matching**: walk call graph once, match battery hashes against jet table; record pointer in call annotation. Eliminates per-call hash lookup.
-- **Subject mask as cache key**: cache on `(masked_subject, formula)`, not `(full_subject, formula)`. Without the mask, subjects with changing counters cause cache misses on every call.
-- **Tarjan SCC for loops**: naive partial evaluation loops forever on `dec` (and any tail-recursive gate). Detect back-edges; defer fixpoint until SCC entry is finalized.
-- **Nomm representation**: SKA output is annotated Nock where Nock 2 carries an `info` field (`~`=indirect, `[sock fol]`=direct). Our equivalent is a compiled Forth word that uses direct `bl` for known call sites.
+- **Direct calls**: annotate Nock 2 sites with a pointer to the callee's compiled form; skip
+  `nock_eval` entirely (~1.7× speedup per paper).
+- **Compile-time jet matching**: walk call graph once, match battery hashes against jet table;
+  record pointer in call annotation. Eliminates per-call hash lookup.
+- **Subject mask as cache key**: cache on `(masked_subject, formula)`, not
+  `(full_subject, formula)`. Without the mask, subjects with changing counters cause cache
+  misses on every call.
+- **Tarjan SCC for loops**: naive partial evaluation loops forever on `dec` (and any
+  tail-recursive gate). Detect back-edges; defer fixpoint until SCC entry is finalized.
+- **Nomm representation**: SKA output is annotated Nock where Nock 2 carries an `info` field
+  (`~`=indirect, `[sock fol]`=direct). Our equivalent is a compiled Forth word that uses
+  direct `bl` for known call sites.
 
 ### Phase 8 — Forth as Jet Dashboard
 Move Nock evaluator dispatch into the Forth dictionary.
