@@ -21,6 +21,12 @@ jobs:
             binutils-aarch64-linux-gnu \
             qemu-system-arm
 
+      - name: Toolchain versions
+        run: |
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-ld --version
+          qemu-system-aarch64 --version
+
       - name: Build
         run: |
           make \
@@ -28,6 +34,16 @@ jobs:
             LD=aarch64-linux-gnu-ld \
             OBJCOPY=aarch64-linux-gnu-objcopy \
             GDB=aarch64-linux-gnu-gdb
+          ls -lh kernel8.elf kernel8.img
+
+      - name: Smoke test QEMU
+        run: |
+          echo "Checking raspi3b machine support:"
+          qemu-system-aarch64 -machine help 2>&1 | grep -i raspi || true
+          echo "Boot output (5s timeout):"
+          echo "" | timeout 5 qemu-system-aarch64 \
+            -machine raspi3b -kernel kernel8.img \
+            -display none -nographic 2>&1 || true
 
       - name: Test
-        run: ./tests/run_tests.sh
+        run: ./tests/run_tests.sh --verbose
