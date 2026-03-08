@@ -439,7 +439,6 @@ Tail calls (ops 2, 6, 7, 8, 9, 10 static, 11) use `goto loop` — no C stack gro
 | 8  | `[8 f g]` | Pin: `*[[*[s f] s]  g]` |
 | 9  | `[9 axis f]` | Invoke: `*[*[s f]  0  axis]` (arm call; checks jets) |
 | 10 | `[10 [ax v] f]` | Edit: `#[ax *[s v]  *[s f]]` |
-| 10 | `[10 atom f]` | Static hint (no-op; evaluate `f`) |
 | 11 | `[11 [tag clue] f]` | Dynamic hint: evaluate `*[s clue]`, fire hint, eval `f` |
 | 11 | `[11 atom f]` | Static hint (no-op; evaluate `f`) |
 
@@ -1076,10 +1075,15 @@ NOCK NOUN> .             \ 0000000000000064  (100)
 
 ---
 
-### Op 10 — Edit (tree replace)
+### Op 10 — Hax (tree edit)
+
+Op 10 is the axiomatic `#` hax operator.  It takes an axis `b`, evaluates
+replacement formula `c` and target formula `d` against the same subject, then
+returns `d`'s result with address `b` replaced by `c`'s result.  The `[b c]`
+pair **must** be a cell; an atom in that position is a Nock crash.
 
 ```
-*[a  [10 [axis val-f] target-f]]  =  #[axis  *[a val-f]  *[a target-f]]
+*[a  10  [axis val-f]  target-f]  =  #[axis  *[a val-f]  *[a target-f]]
 ```
 
 ```forth
@@ -1310,8 +1314,7 @@ Reduction rules:
   *[a 7 b c]         *[*[a b] c]
   *[a 8 b c]         *[[*[a b] a] c]
   *[a 9 b c]         let core=*[a c] in *[core 0 b]   (arm call)
-  *[a 10 [b c] d]    #[b *[a c] *[a d]]               (tree edit)
-  *[a 10 b c]        *[a c]                            (static hint)
+  *[a 10 [b c] d]    #[b *[a c] *[a d]]               (tree edit; [b c] must be a cell)
   *[a 11 [b c] d]    *[a d] (after evaluating *[a c])  (dynamic hint)
   *[a 11 b c]        *[a c]                            (static hint)
   *[a [b c] d]       [*[a b c] *[a d]]                (distribution)

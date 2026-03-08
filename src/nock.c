@@ -464,10 +464,13 @@ loop:
         goto loop;
     }
 
-    /* ── 10  tree edit / hint ─────────────────────────────────────────────
+    /* ── 10  tree edit (hax) ───────────────────────────────────────────────
      *
-     *  *[a 10 [b c] d]  =  #[b *[a c] *[a d]]   (tree edit)
-     *  *[a 10 b c]      =  *[a c]                 (static hint, ignore b)
+     *  *[a 10 [b c] d]  =  #[b *[a c] *[a d]]
+     *
+     *  Op 10 is exclusively the # hax operator: evaluate c and d against
+     *  subject a, then replace address b in the result of d with the result
+     *  of c.  The hint argument [b c] MUST be a cell; an atom head crashes.
      */
     case 10: {
         if (!noun_is_cell(tail))
@@ -485,8 +488,8 @@ loop:
             noun target = nock_eval(subject, d, jets, sky);
             return hax(direct_val(b), val, target);
         } else {
-            formula = d;
-            goto loop;
+            nock_crash("op10: hint must be a cell [axis val-formula]; atom hint is not valid Nock 4K");
+            return NOUN_ZERO; /* unreachable */
         }
     }
 
