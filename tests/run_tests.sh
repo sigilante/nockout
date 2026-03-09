@@ -192,13 +192,9 @@ T "op8: old subj preserved"     "000000000000002A" \
 T "op8: pin then tis head/tail" "0000000000000001" \
     "5 N>N  8 N>N  1 N>N 42 N>N CONS  5 N>N 0 N>N 2 N>N CONS  0 N>N 3 N>N CONS  CONS CONS  CONS CONS  NOCK NOUN> ."
 
-# ── Op 10: tree edit / static hint ────────────────────────────────────────
-# Static hint: *[42 [10 7 [0 1]]] = *[42 [0 1]] = 42  (hint atom 7 discarded)
-T "op10: static hint atom"      "000000000000002A" \
-    "42 N>N  10 N>N 7 N>N 0 N>N 1 N>N CONS CONS CONS  NOCK NOUN> ."
-# Static hint with computation: *[5 [10 99 [4 [0 1]]]] = *[5 [4 [0 1]]] = 6
-T "op10: static hint+lus"       "0000000000000006" \
-    "5 N>N  10 N>N 99 N>N 4 N>N 0 N>N 1 N>N CONS CONS CONS CONS  NOCK NOUN> ."
+# ── Op 10: tree edit (hax) ─────────────────────────────────────────────────
+# Op 10 is exclusively *[a 10 [b c] d] = #[b *[a c] *[a d]].
+# The form [10 atom f] does not exist in Nock 4K and crashes the evaluator.
 # Dynamic: *[[1 2] [10 [2 [1 99]] [0 1]]] = #[2 99 [1 2]] = [99 2]
 #   hint=[2 [1 99]]: axis b=2, val=*[subj [1 99]]=99; target=*[subj [0 1]]=[1 2]
 #   hax(2, 99, [1 2]) → [99 2]
