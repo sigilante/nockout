@@ -1,2 +1,5 @@
 *.o
+*.xcf
+*.elf
+*.img
 .DS_Store
