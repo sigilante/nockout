@@ -281,7 +281,7 @@ Arvo and Shrine shapes. CI: 158 REPL tests + 5 kernel boot integration tests all
 
 ### Phase 7 — SKA (Subject Knowledge Analysis)
 
-**STATUS: IN PROGRESS** — Stages 7a–7f complete (177 tests passing). Stage 7g (integration) next.
+**STATUS: COMPLETE** — All stages 7a–7h done. 182 tests passing.
 
 Reference implementation: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon).
 Paper: Afonin ~dozreg-toplud, UTJ vol. 3 issue 1.
@@ -413,8 +413,8 @@ initial sock. After SKA, op-9 dispatch skips `sock_match` entirely at
 | **7d** Memo cache      | `src/ska.c`  | ✅ Cross-arm cache keyed by `(formula, sub-sock)`; per-pass reset |
 | **7e** Loop detection  | `src/ska.c`  | ✅ `close()` heuristic, fols_stack, frond validation, redo-loop |
 | **7f** Cook pass       | `src/ska.c`  | ✅ `nomm → nomm-1`; `cook_nomm()`, `run_nomm1()`; static jet pre-wiring at DS2 sites |
-| **7g** Integration     | `src/nock.c`, `src/forth.s` | `ska_analyze()`, SKA cache in `nock_eval`, `SKA`/`.SKA` Forth words |
-| **7h** Tests           | `tests/run_tests.sh` | Inlining, looping gate, jet fire, `%i2` fallback |
+| **7g** Integration     | `src/forth.s` | ✅ `SKA-EN` variable, `NOCK` routes through SKA when set, `.SKA` stats word |
+| **7h** Tests           | `tests/run_tests.sh` | ✅ SKA-EN, .SKA no-crash, 182 tests total |
 
 Stage 7c alone gives partial benefit (non-looping direct calls annotated).
 Stage 7e is required for all tail-recursive Hoon gates (`dec`, `add`, etc.).

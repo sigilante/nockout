@@ -1481,3 +1481,97 @@ boil_t *ska_analyze(noun subject, noun formula,
 
     return NULL;  /* exhausted retries */
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Stage 7g — ska_print_stats: analysis dashboard (.SKA Forth word)
+ *
+ * Walks the cooked nomm1_t tree and counts:
+ *   total   — NOMM_2 nodes (all call sites)
+ *   direct  — NOMM_2 nodes with has_bell (formula statically known)
+ *   jetted  — NOMM_2 nodes with jet != NULL (pre-wired at cook time)
+ *
+ * Prints one line to UART:  "SKA: N call sites (D direct, J jetted)"
+ * where N, D, J are printed as decimal integers.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+static void ska_udec(uint32_t v)
+{
+    if (v == 0) { uart_putc('0'); return; }
+    char buf[12];
+    int  i = 0;
+    while (v > 0) { buf[i++] = '0' + (v % 10); v /= 10; }
+    while (i > 0) uart_putc(buf[--i]);
+}
+
+static void count_sites_r(const nomm1_t *n, int *total, int *direct, int *jetted)
+{
+    if (!n) return;
+    switch (n->tag) {
+    case NOMM_0: case NOMM_1: return;
+    case NOMM_3: case NOMM_4:
+        count_sites_r(n->n_unary.p, total, direct, jetted);
+        return;
+    case NOMM_5:
+        count_sites_r(n->n5.p, total, direct, jetted);
+        count_sites_r(n->n5.q, total, direct, jetted);
+        return;
+    case NOMM_6:
+        count_sites_r(n->n6.c, total, direct, jetted);
+        count_sites_r(n->n6.y, total, direct, jetted);
+        count_sites_r(n->n6.n, total, direct, jetted);
+        return;
+    case NOMM_7:
+        count_sites_r(n->n7.p, total, direct, jetted);
+        count_sites_r(n->n7.q, total, direct, jetted);
+        return;
+    case NOMM_8:
+        count_sites_r(n->n8.p, total, direct, jetted);
+        count_sites_r(n->n8.q, total, direct, jetted);
+        return;
+    case NOMM_2:
+        (*total)++;
+        if (n->n2.has_bell) (*direct)++;
+        if (n->n2.jet != NULL) (*jetted)++;
+        count_sites_r(n->n2.p, total, direct, jetted);
+        if (n->n2.q) count_sites_r(n->n2.q, total, direct, jetted);
+        return;
+    case NOMM_10:
+        count_sites_r(n->n10.val_fol, total, direct, jetted);
+        count_sites_r(n->n10.tgt_fol, total, direct, jetted);
+        return;
+    case NOMM_11:
+        if (n->n11.is_dyn && n->n11.clue)
+            count_sites_r(n->n11.clue, total, direct, jetted);
+        count_sites_r(n->n11.main, total, direct, jetted);
+        return;
+    case NOMM_12:
+        count_sites_r(n->n12.ref_fol, total, direct, jetted);
+        count_sites_r(n->n12.thunk_fol, total, direct, jetted);
+        return;
+    case NOMM_DIST:
+        count_sites_r(n->ndist.p, total, direct, jetted);
+        count_sites_r(n->ndist.q, total, direct, jetted);
+        return;
+    default: return;
+    }
+}
+
+void ska_print_stats(noun subject, noun formula)
+{
+    boil_t *boil = ska_analyze(subject, formula, NULL, NULL);
+    if (!boil) {
+        uart_puts("SKA: analysis failed\n");
+        return;
+    }
+    int total = 0, direct = 0, jetted = 0;
+    count_sites_r(boil->entry, &total, &direct, &jetted);
+    uart_puts("SKA: ");
+    ska_udec(total);
+    uart_puts(" call site");
+    if (total != 1) uart_putc('s');
+    uart_puts(" (");
+    ska_udec(direct);
+    uart_puts(" direct, ");
+    ska_udec(jetted);
+    uart_puts(" jetted)\n");
+}

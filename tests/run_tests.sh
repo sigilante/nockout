@@ -563,6 +563,20 @@ T "ska memo: double dec(5)=4,4"  "0000000000000004" \
 T "ska memo: double dec(5)=4,4 again"  "0000000000000004" \
     "0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  SKNOCK  NOUN> ."
 
+# ── Stage 7g: SKA-EN + .SKA ──────────────────────────────────────────────
+# SKA-EN routes NOCK through ska_nock; results must match plain NOCK.
+T "ska-enable: dec(5)=4 via NOCK"  "0000000000000004" \
+    "1 SKA-EN !  0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  NOCK  NOUN> .  0 SKA-EN !"
+T "ska-enable: add(3,4)=7 via NOCK"  "0000000000000007" \
+    "1 SKA-EN !  0 N>N  6579297 N>N  3 N>N  4 N>N  JCORE2 JD JWRAP  NOCK  NOUN> .  0 SKA-EN !"
+T "ska-enable: sub(10,3)=7 via NOCK"  "0000000000000007" \
+    "1 SKA-EN !  0 N>N  6452595 N>N  10 N>N  3 N>N  JCORE2 JD JWRAP  NOCK  NOUN> .  0 SKA-EN !"
+T "ska-enable: NOCK disabled again works"  "0000000000000005" \
+    "0 SKA-EN !  0 N>N  6514020 N>N  6 N>N  JCORE1 JD JWRAP  NOCK  NOUN> ."
+# .SKA: verify it runs without crashing; stack must be clean after (42 = 0x2A)
+T "dotska: no crash on simple formula"  "000000000000002A" \
+    "0 N>N  0 N>N 1 N>N CONS  .SKA  42 N>N ."
+
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"
 for line in "${TLINES[@]}"; do

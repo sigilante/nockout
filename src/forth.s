@@ -1666,11 +1666,24 @@ defcode "SLOT", 4, slot, 0
     str     x0, [DSP, #-8]!
     NEXT
 
+// SKA-EN ( -- addr )  when non-zero, NOCK routes through ska_nock
+defvar "SKA-EN", 6, ska_enable, 0, 0
+
 // NOCK ( subject formula -- product )   Nock 4K evaluator
-defcode "NOCK", 4, nock, 0
+// When SKA-EN is non-zero, routes through ska_nock (SKA-annotated eval).
+defcode "NOCK", 4, nock_word, 0
     ldr     x1, [DSP], #8       // x1 = formula
     ldr     x0, [DSP], #8       // x0 = subject
-    bl      nock                // nock(subject, formula)
+    adr     x4, word_ska_enable
+    ldr     x4, [x4, #32]       // load SKA-EN storage cell
+    cbz     x4, .Lnock_plain
+    mov     x2, #0              // jets = NULL
+    mov     x3, #0              // sky  = NULL
+    bl      ska_nock
+    b       .Lnock_done
+.Lnock_plain:
+    bl      nock
+.Lnock_done:
     str     x0, [DSP, #-8]!
     NEXT
 
@@ -1685,6 +1698,15 @@ defcode "SKNOCK", 6, sknock, 0
     mov     x3, #0              // sky  = NULL
     bl      ska_nock            // ska_nock(subject, formula, NULL, NULL)
     str     x0, [DSP, #-8]!
+    NEXT
+
+// .SKA ( subject formula -- )   Print SKA analysis dashboard to UART
+// Runs ska_analyze (scan + cook) and prints call site statistics:
+//   "SKA: N call sites (D direct, J jetted)"
+defcode ".SKA", 4, dotska, 0
+    ldr     x1, [DSP], #8       // x1 = formula
+    ldr     x0, [DSP], #8       // x0 = subject
+    bl      ska_print_stats     // ska_print_stats(subject, formula)
     NEXT
 
 // ═════════════════════════════════════════════════════════════════════════════

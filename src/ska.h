@@ -359,3 +359,10 @@ noun    run_nomm1(const nomm1_t *n, noun subject,
 
 /* Reclaim all nomm_t / nomm1_t / boil_t arena allocations. */
 void  ska_arena_reset(void);
+
+/*
+ * ska_print_stats: run ska_analyze and print a one-line dashboard to UART.
+ * Output format:  "SKA: N call sites (D direct, J jetted)\n"
+ * Used by the .SKA Forth word.
+ */
+void  ska_print_stats(noun subject, noun formula);

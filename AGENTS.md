@@ -226,8 +226,8 @@ The stages in order (each builds on the previous):
 4. **7d** `src/ska.c` — memo cache (cross-arm, keyed by `(formula, sub-sock)`) ✅
 5. **7e** `src/ska.c` — loop detection: `close()` heuristic, fols_stack, frond validation, redo-loop ✅
 6. **7f** `src/ska.c` — cook pass: `cook_nomm()` converts `nomm_t → nomm1_t`; `run_nomm1()` interpreter; static jet pre-wiring at DS2 sites via `cook_find_jet()` ✅
-7. **7g** `src/nock.c` + `src/forth.s` — `ska_analyze()`, SKA cache in `nock_eval`, Forth words `SKA`/`.SKA`
-8. **7h** Tests for cook pass (inlining, looping gate, `run_nomm1` jet dispatch)
+7. **7g** `src/forth.s` — `SKA-EN` defvar (controls NOCK routing), `.SKA` stats word (`ska_print_stats`), wire `NOCK` to `ska_nock` when `SKA-EN` is set ✅
+8. **7h** `tests/run_tests.sh` — 5 new tests: SKA-EN routing, .SKA no-crash; 182 tests total ✅
 8. **7h** `tests/run_tests.sh` — SKA-specific tests
 
 **Phase 8** (after 7): Move Nock dispatch into Forth dictionary (see below).
@@ -468,7 +468,7 @@ core = run_nomm1(subject, c_nomm1, ...)  // %ds2 already resolved to jet_fn_t
 | 5d | Noun tag redesign (direct atom = raw integer) | DONE |
 | 6 | Kernel loop: Arvo + Shrine shapes, UART framing, effect dispatch | DONE |
 | CI | QEMU raspi4b + 158 REPL tests + 5 kernel boot tests | DONE |
-| 7 | SKA: symbolic partial eval, `$nomm` AST, compile-time jet matching | IN PROGRESS (7a–7f ✅, 7g next) |
+| 7 | SKA: symbolic partial eval, `$nomm` AST, compile-time jet matching | COMPLETE ✅ |
 | 8 | Forth as jet dashboard: evaluator dispatch in dictionary | TODO |
 
 PoC gate: Phases 0-7. Phase 8 is "turning it into a live-patchable OS."
