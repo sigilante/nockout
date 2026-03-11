@@ -207,16 +207,74 @@ NOCK               \ evaluate
 ## Remaining Phases
 
 ### Phase 6 — Kernel Loop
-Replace the Forth REPL as the top-level driver with a proper Nock kernel loop:
-- Accept an event noun over UART (cue-encoded).
-- Run `nock(subject, event)` to produce `[effects new-subject]`.
-- Emit effects (jam-encoded) over UART.
-- Update subject and repeat.
 
-This is the minimal "Arvo-shaped" event loop.
+Replace the Forth REPL as the top-level driver with a Nock event loop.
+Two kernel shapes are supported, selected by a flag byte in the PILL header:
 
-**Prerequisite**: bignum `div` and `mod` (needed by most real Nock cores); additional jets
-for the Hoon standard library arithmetic layer.
+**Arvo** (shape = 0):
+```
+nock([kernel event], slam-formula) → [effects new-kernel]
+```
+
+**Shrine** (shape = 1):  same as Arvo but result includes deferred causes:
+```
+nock([kernel event], slam-formula) → [effects new-kernel causes]
+```
+Causes are a Nock list of events re-injected into the loop without waiting on UART.
+
+The calling formula is the standard Hoon gate slam hardcoded as a constant:
+`[9 2 [10 [6 [0 3]] [0 2]]]`
+
+The kernel gate is a normal Hoon gate built in the Dojo and loaded via PILL.
+No custom compiler needed.
+
+#### PILL Format v2
+
+```
+bytes  0-7:   uint64_t (LE) = byte count of jam data
+byte   8:     kernel shape  (0 = Arvo, 1 = Shrine)
+bytes  9-15:  reserved/padding (zeros)
+bytes  16+:   raw jam bytes (little-endian bignum, 16-byte aligned)
+```
+
+`tools/mkpill.py` wraps a raw Dojo jam file into this format.
+
+#### UART Framing
+
+Events in / effects out: `[8-byte LE length][raw jam bytes]`.
+
+#### Effect Dispatch (Phase 6)
+
+Effects are a Nock list `[[tag data] rest]` terminated by `0`.
+
+| Tag | Cord | Action |
+|-----|------|--------|
+| `%out` | 7632239 | `uart_puts(data)` |
+| `%blit` | 1952605026 | `uart_puts(data)` |
+| unknown | — | silent ignore |
+
+#### Forth Words Added
+
+| Word | Stack | Description |
+|------|-------|-------------|
+| `KSHAPE` | `( -- addr )` | variable: 0=Arvo 1=Shrine, loaded from PILL header |
+| `RECV-NOUN` | `( -- noun )` | read length-framed jam noun from UART |
+| `SEND-NOUN` | `( noun -- )` | jam noun, write length-framed to UART |
+| `DISPATCH-FX` | `( effects -- )` | walk effects list, dispatch known tags |
+| `ARVO-LOOP` | `( kernel -- )` | Arvo event loop, never returns |
+| `SHRINE-LOOP` | `( kernel -- )` | Shrine event loop, never returns |
+| `KERNEL` | `( -- )` | PILL → CUE → dispatch by KSHAPE; falls back to REPL if no pill |
+
+#### Design Decisions
+
+- **Forth REPL preserved**: no pill → `KERNEL` falls through to `QUIT`. The REPL
+  remains the debug escape hatch throughout Phase 6+.
+- **No custom compiler**: kernel is a standard Hoon gate from the Dojo.
+  `%wild` hints can be hand-annotated in the jam or added later via Phase 7 SKA.
+- **UART receive buffer**: 28KB static window at `UART_RXBUF_BASE` (between TIB
+  and dictionary). Sufficient for Phase 6 test events; extend for Phase 7+.
+
+**Prerequisites**: all complete — bignum ✓, JAM/CUE ✓, PILL loader ✓, jets ✓.
 
 ### Phase 7 — SKA (Subject Knowledge Analysis)
 Implement the partial Nock interpreter described in Afonin ~dozreg-toplud, UTJ v3i1.
