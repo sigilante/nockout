@@ -3,3 +3,6 @@
 *.elf
 *.img
 .DS_Store
+*.pill
+*.bin
+grok-image-*.png
