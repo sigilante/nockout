@@ -284,65 +284,156 @@ Arvo and Shrine shapes. CI: 158 REPL tests + 5 kernel boot integration tests all
 Reference implementation: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon).
 Paper: Afonin ~dozreg-toplud, UTJ vol. 3 issue 1.
 
-SKA is a one-pass symbolic partial evaluator over Nock formulas. It takes a
-`(subject: sock, formula: *)` pair and produces an **annotated Nock AST** (`$nomm`) in
-which every Nock 2/9 call site is classified:
+#### What SKA Does
 
-| SKA tag | Meaning |
-|---------|---------|
-| `%i2`   | Indirect call — callee not statically known |
-| `%ds2`  | Direct, safe — formula is fully known; callee's `$nomm` can be inlined |
-| `%dus2` | Direct, unsafe — callee known but formula might vary; use call site |
+SKA is a static analysis pass that takes a `(subject-sock, formula)` pair and produces
+an **annotated Nock AST** (`$nomm`) where every Nock 2/9 call site is classified:
 
-The annotated AST drives **compile-time jet matching** (no per-call hash lookup) and
-**correct cache keying** via the `$cape` subject mask.
+| SKA tag  | Meaning |
+|----------|---------|
+| `%i2`    | Indirect — formula not statically known; fall back to `nock_eval` |
+| `%ds2`   | Direct safe — formula is `%0` or `%1`; no formula eval needed |
+| `%dus2`  | Direct unsafe — formula known but complex; verify at runtime |
 
-#### Key data structures (port from `noir.hoon`)
+This makes jet matching a **one-time analysis cost** rather than a per-call `sock_match`
+scan. It also enables **correct cache keying**: the `$cape` subject mask identifies
+exactly which axes of the subject matter for a given call, so cache keys exclude
+irrelevant parts (e.g. a counter that increments but doesn't affect code paths).
 
-```c
-// $cape: boolean tree mask (true = axis is known, false = wildcard)
-typedef struct cape { bool is_atom; union { bool known; struct { cape_t *h, *t; }; }; } cape_t;
+#### Layer Relationship
 
-// $sock: partial subject knowledge
-typedef struct { cape_t *cape; noun data; } sock_t;
-
-// $bell: a call site identified by (subject knowledge, formula)
-typedef struct { sock_t bus; noun fol; } bell_t;
-
-// $nomm: annotated Nock AST  (see noir.hoon for full union)
-typedef enum { NOMM_CONST, NOMM_I2, NOMM_DS2, NOMM_DUS2, NOMM_3, NOMM_4, ... } nomm_tag_t;
-typedef struct nomm nomm_t;
-struct nomm { nomm_tag_t tag; /* ... per-tag fields including glob_t site ... */ };
+```
+┌──────────────────────────────────────────┐
+│  Forth layer  (src/forth.s)              │
+│  KERNEL word → NOCK word → nock_eval()   │
+│  New words: SKA, .SKA                    │
+└──────────────────┬───────────────────────┘
+                   │ noun subject, formula
+┌──────────────────▼───────────────────────┐
+│  Nock layer  (src/nock.c)                │
+│  nock_eval() checks SKA cache first      │
+│    hit  → run_nomm1()                    │
+│    miss → full eval as before            │
+└──────────────────┬───────────────────────┘
+                   │ one-time analysis at load
+┌──────────────────▼───────────────────────┐
+│  SKA layer  (src/ska.c / src/ska.h)      │
+│  ska_analyze(s, f) → nomm1_t*           │
+│  scan pass  →  cook pass  →  cache       │
+│  %ds2 sites wired to hot_state[] jets    │
+└──────────────────────────────────────────┘
 ```
 
-#### Algorithm (from `skan.hoon`)
+The Forth layer does not change structurally — only two new Forth words are added
+(`SKA` to trigger analysis, `.SKA` to print the call-site dashboard).
 
-1. **`scan` pass**: Symbolically evaluate formula over partial subject.
-   At every Nock 2/9 site, check if the formula operand is statically known.
-   If known → emit `%ds2`/`%dus2` with a `glob` call-site ID; push callee onto work-list.
-   If not known → emit `%i2`.
-2. **Tarjan SCC**: Run after each fixpoint guess to detect back-edges (tail-recursive
-   gates like `dec`). Back-edges mark the loop entry; defer `scan` result until SCC exits.
-3. **`cook` pass**: Walk the annotated AST; match `%ds2`/`%dus2` sites against
-   `hot_state[]` by label. Record `jet_fn_t` pointer in the glob table.
-4. **`$long` global state**: Holds memo table, arm index, jet cold-state, and
-   per-arm `$nomm` entries. Lives on the C heap; scoped to one analysis run.
+#### Key Types (ported from `noir.hoon` / `sock.hoon`)
+
+```c
+// $cape: boolean tree — & = axis known, | = wildcard
+// atom: is_atom=true, known=true/false
+// cell: is_atom=false, head/tail are sub-capes
+typedef struct cape_s cape_t;
+struct cape_s { bool is_atom; union { bool known; struct { cape_t *h, *t; }; }; };
+
+// $sock: partial knowledge of a noun
+typedef struct { cape_t *cape; noun data; } sock_t;
+
+// $bell: call site identity = (subject template, formula)
+typedef struct { sock_t bus; noun fol; } bell_t;
+
+// $nomm: annotated Nock AST (Nock 2 split into three variants)
+typedef enum {
+    NOMM_0, NOMM_1, NOMM_I2, NOMM_DS2, NOMM_DUS2,
+    NOMM_3, NOMM_4, NOMM_5, NOMM_6, NOMM_7,
+    NOMM_10, NOMM_S11, NOMM_D11, NOMM_12
+} nomm_tag_t;
+
+// $nomm-1: final AST — %2 carries resolved call info
+typedef struct { sock_t less; noun fol; } call_info_t;   // resolved bell
+```
+
+#### Algorithm (from `skan.hoon`, 2300 lines)
+
+**Pass 1 — `scan`** (~850 lines): Symbolic partial evaluator over `(sock, formula)`.
+For each opcode, propagates `sock` (partial subject knowledge):
+
+- `%0 ax` → `sock_pull(sub, ax)` — extract sub-sock at axis
+- `%1 val` → known constant `[& val]`
+- `%3/%4/%5` → `dunno` (result always unknown)
+- `%6 c y n` → `sock_purr(prod_y, prod_n)` — intersection of both branches
+- `%7 p q` → compose — `prod_p` becomes subject for `q`
+- `%9 ax f` → desugar to `[%7 f %2 [%0 1] %0 ax]`
+
+**Nock 2 — five sub-cases**:
+1. `cape(formula-prod) ≠ &` → **indirect** `%i2`
+2. Formula known + `try_inline` succeeds → inline as `%7`
+3. Formula known + memo cache hit → emit `%ds2`/`%dus2` with memo index
+4. Formula known + loop heuristic fires → emit `%ds2`/`%dus2` with loop site
+5. Formula known + melo (within-cycle) cache hit → reuse
+6. Otherwise → allocate evalsite, recurse, emit `%ds2`/`%dus2`
+
+**Loop detection heuristic** (`++close`): When analysing a Nock-2 call, scan
+the call stack for the same formula at a site `par` whose masked subject
+subsumes the current subject. If found, guess it's a loop — emit a backedge
+site reference, record `[par, kid, par-sub, kid-sub]` in `cycles`.
+
+**Cycle validation** (when exiting cycle entry point): For each `[par, kid]`
+frond, iteratively compute `par_final` by expanding `want` through the kid's
+provenance. Check `par_final ⊇ kid_sub`. If this fails, add `[par, kid]` to
+the blocklist and **redo the entire scan** (the `redo-loop`). This is why `dec`
+and other tail-recursive gates are handled correctly without hard-coding.
+
+**Pass 2 — `cook`** (~200 lines): Converts `nomm` → `nomm-1`.
+Walks the annotated AST; resolves `%ds2`/`%dus2` site references to concrete
+`[less-sock, formula]` pairs from `long.arms.sites` / `long.memo`. Matches
+resolved formulas against `hot_state[]` labels → stores `jet_fn_t` pointer.
 
 #### Integration with `%wild`
 
-`%wild` already supplies `$wilt = [(list [label sock])]` at runtime. SKA consumes
-this as the initial sock for the kernel gate. The two mechanisms are complementary:
-- `%wild` → runtime subject knowledge (what batteries are present)
-- SKA → compile-time call graph analysis (which calls are direct)
+`%wild` and SKA are complementary, not competing:
+- **`%wild`** (runtime): supplies the initial `$wilt` registration — which
+  batteries are present and what labels they have. This is the *subject mask*.
+- **SKA** (analysis-time): given that subject mask, analyses the full call graph
+  to classify every call site as direct or indirect.
 
-After SKA, `op9` dispatch in `nock_eval` can branch directly to a cached `nomm_t*`
-instead of calling `nock()` recursively.
+The `%wild` clue is consumed first; SKA uses the resulting `wilt_t` as its
+initial sock. After SKA, op-9 dispatch skips `sock_match` entirely at
+`%ds2` sites.
+
+#### Stage Plan
+
+| Stage | File(s) | Content |
+|-------|---------|---------|
+| **7a** Types           | `src/ska.h`  | `cape_t`, `sock_t`, `nomm_t`, `nomm1_t`, `bell_t`, `site_t`, `short_t`, `long_t`, `cycle_t` |
+| **7b** Sock ops        | `src/ska.c`  | `cape_and/or`, `cape_app`, `sock_pull`, `sock_huge`, `sock_knit`, `sock_purr`, `sock_pack`, `sock_darn`, `dunno` |
+| **7c** Scan (linear)   | `src/ska.c`  | All opcodes; `%2` emits `%i2` for loops (conservative) |
+| **7d** Memo cache      | `src/ska.c`  | Cross-arm cache keyed by `(formula, sub-sock)` |
+| **7e** Loop detection  | `src/ska.c`  | `close()`, `add_frond()`, frond validation, melo cache, redo-loop |
+| **7f** Cook pass       | `src/ska.c`  | `nomm → nomm-1`; wire `%ds2` sites to `hot_state[]` |
+| **7g** Integration     | `src/nock.c`, `src/forth.s` | `ska_analyze()`, SKA cache in `nock_eval`, `SKA`/`.SKA` Forth words |
+| **7h** Tests           | `tests/run_tests.sh` | Inlining, looping gate, jet fire, `%i2` fallback |
+
+Stage 7c alone gives partial benefit (non-looping direct calls annotated).
+Stage 7e is required for all tail-recursive Hoon gates (`dec`, `add`, etc.).
+
+**What we are NOT porting from `skan.hoon`**:
+- `%fast` hint processing — we use `%wild` only, `%fast` is intentionally ignored
+- `$source` provenance tracking — deferred; use conservative `cape = &` initially
+- `++find-args` argument minimization — an optimization on top of SKA, not needed for correctness
+- Tarjan SCC (`++find-sccs`) — only used by `find-args`, not the main scan/cook flow
+- `++ka.rout` queue management — driven by `%fast` cold state; not needed
 
 ### Phase 8 — Forth as Jet Dashboard
+
 Move Nock evaluator dispatch into the Forth dictionary.
 
-Each jet is a named Forth word. The hot-state table becomes a Forth vocabulary.
-SKA-annotated call sites `bl` directly into Forth words, bypassing `nock_eval`.
+Each jet is a named Forth word. The `hot_state[]` C table becomes a Forth vocabulary.
+SKA-annotated `%ds2` call sites dispatch to Forth words by label, bypassing `nock_eval`.
 The REPL becomes a live jet-registration and debugging interface:
-- Define a new jet word at the REPL → immediately available for SKA to wire up.
-- Inspect the annotated call graph interactively.
+
+- Define a new jet at the REPL: `': dec  ...impl...  ;'` → immediately wirable by SKA.
+- Inspect the annotated call graph: `.SKA` prints every `%ds2` site and its wired word.
+- Replace a running jet without reflash: redefine the word, call `SKA` again.
+
+This is the core architectural thesis: **the Forth dictionary IS the jet dashboard**.

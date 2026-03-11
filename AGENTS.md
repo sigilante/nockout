@@ -42,7 +42,7 @@ make clean
 Toolchain: `aarch64-elf-gcc`, `aarch64-elf-ld`, `aarch64-elf-objcopy`, `aarch64-elf-gdb`
 Install: `brew install aarch64-elf-gcc aarch64-elf-binutils aarch64-elf-gdb qemu tio`
 
-QEMU target: `-machine raspi3b`. UART maps to stdio via `-nographic`.
+QEMU target: `-machine raspi4b`. UART maps to stdio via `-nographic`.
 
 ## Memory Map (src/memory.h)
 
@@ -188,92 +188,96 @@ causing it to loop back into QUIT.
 
 ## Current Status
 
-**Phase 0: COMPLETE**
-- QEMU boots, UART works, netboot configured.
+**Phase 0: COMPLETE** — QEMU boots, UART works, netboot configured.
 
-**Phase 1: COMPLETE**
-- REPL boots: `Fock v0.1  AArch64 Forth` banner + `> ` prompt.
-- Full primitive set: arithmetic, stack ops, comparisons, memory, I/O.
-- Colon definitions (`: ;`), RECURSE.
-- Control flow: `IF ELSE THEN`, `BEGIN UNTIL AGAIN`, `BEGIN WHILE REPEAT`.
-- `.` prints hex intentionally — decimal requires bignum (Phase 4). Do not change.
+**Phase 1: COMPLETE** — REPL, `:` `;`, full control flow. `.` prints hex (decimal needs bignum).
 
-**Phase 2: COMPLETE**
-- noun.h/noun.c: 4-type tagged noun, bump allocator, refcount, noun_eq.
-- Forth words: `>NOUN`, `NOUN>`, `CONS`, `CAR`, `CDR`, `ATOM?`, `CELL?`, `=NOUN`.
-- Bug fixed: `noun_is_atom` and `ATOM?`/`CELL?` checked bit63 only, missing direct atoms (tag=01).
-  Corrected to `(n >> 62) != 0`.
+**Phase 2: COMPLETE** — `noun.h`/`noun.c`: tagged nouns, bump allocator, refcount.
+Forth words: `>NOUN`, `NOUN>`, `CONS`, `CAR`, `CDR`, `ATOM?`, `CELL?`, `=NOUN`.
 
-**Phase 3: COMPLETE (opcodes 0–10)**
-- `src/nock.c`: `slot()`, `hax()`, and `nock()` implementing opcodes 0–10.
-- All TCO opcodes (2, 6, 7, 8, 9, 10-static) use `goto loop` — zero stack growth.
-- `hax(a, val, target)`: recursive tree edit, mirrors `slot` path-bit traversal.
-- Opcode 10: static hint (atom b → TCO eval d), dynamic/tree-edit ([b c] → hax(b, *[a c], *[a d])).
-- Crash behaviour: `nock_crash()` prints to UART then `longjmp(nock_abort, 1)` back to QUIT.
-- Forth words: `SLOT ( axis noun -- result )`, `NOCK ( subject formula -- product )`.
+**Phase 3: COMPLETE** — `src/nock.c`: opcodes 0–10, TCO (`goto loop`), `hax()` tree edit.
+`nock_crash()` longjmps to QUIT restart on fatal error.
 
-**Phase 3b: COMPLETE (op 11 + hint infrastructure)**
-- Evaluator widened to `nock_eval(subject, formula, const wilt_t *jets, sky_fn_t sky)` (internal static).
-- Public shims: `nock(s,f)` → `nock_eval(s,f,NULL,NULL)`; `nock_ex(s,f,jets,sky)` exposes full API.
-- `src/nock.h` now exports: `sky_fn_t`, `sock_t`, `wilt_t` (WILT_MAX=16), `wilt_entry_t`, `jet_fn_t`.
-- Hint tag constants (Urbit cord encoding, LSB = first char):
-  `%wild`=0x646C6977, `%slog`=0x676F6C73, `%xray`=0x79617278, `%mean`=0x6E61656D, etc.
-- Op 11 static hint: TCO eval d, discard atom tag.
-- Op 11 dynamic hint dispatch:
-  - `%wild` — `parse_wilt()` parses `$wilt` clue noun into `wild_buf` (local frame); `jets = &wild_buf`.
-  - `%slog` — `uart_puts` + `noun_print()` to UART (bare-metal printf).
-  - `%xray` — `noun_print()` recursive noun tree dump to UART (bare-metal noun inspector).
-  - `%mean`, `%memo`, `%bout` — silent stubs; correct to no-op per spec.
-  - unknown tags — silent no-op.
-- `noun_print(noun, depth)`: recursive noun tree printer; depth-limited at 12; direct atoms as hex.
-- `sock_match(cape, data, subject)`: structural pattern match per `$cape`/`$sock` spec.
-- `parse_wilt(noun, wilt_t*)`: parses Hoon list of `[label [cape data]]` pairs.
-- Hot state: `hot_state[]` populated with 10 jets: dec/add/sub/mul/lth/gth/lte/gte/div/mod.
-- Op 9 now checks `jets` before TCO: scans wilt for matching sock, calls jet if found.
-- UART backspace fix: BS/DEL now sends `\b \b` erase sequence.
-- Regression test suite: `tests/run_tests.sh` — 158 tests, all passing.
+**Phase 3b: COMPLETE** — Op 11 hint dispatch: `%wild` (jet registration), `%slog`, `%xray`.
+Evaluator: `nock_eval(subject, formula, const wilt_t *jets, sky_fn_t sky)`.
+`sock_match()` and `parse_wilt()` implement `$cape`/`$sock`/`$wilt` matching.
+Hot state `hot_state[]`: 10 jets (dec/add/sub/mul/lth/gth/lte/gte/div/mod), keyed by label cord.
 
-**Phases 4b/4c/4d/4e/5a/5b/5c/5d/5e: COMPLETE**
-- BLAKE3 (`src/blake3.c`): hash_atom(), 7 official test vectors pass.
-- Bignum (`src/bignum.c`): add/sub/mul/div/mod/cmp/lsh/rsh/or/and/xor/bex/met, decimal print.
-- Noun tag redesign: direct atom = raw integer (bit 63 = 0), indirect = tag 10, cell = tag 11.
-- Jam/cue (`src/jam.c`): `noun jam(noun)` / `noun cue(noun)` + Forth words `JAM` `CUE`.
-- PILL loader: `PILL` Forth word loads jammed atom from 0x10000000 (QEMU `-device loader`).
-- Hot jets in `hot_state[]`: dec/add/sub/mul/lth/gth/lte/gte/div/mod, keyed by label cord.
+**Phases 4b/4c/4d/4e: COMPLETE** — BLAKE3 (`src/blake3.c`). Bignum (`src/bignum.c`):
+add/sub/mul/div/mod/cmp/lsh/rsh/or/and/xor/bex/met, decimal print. Noun tag redesign:
+direct atom = raw integer (bit 63 = 0).
 
-**Phase 6: COMPLETE (kernel loop)**
-- `src/kernel.c`: `arvo_loop`, `shrine_loop`, UART framing, effect dispatch.
-- PILL v2 format: 8-byte length + 1-byte shape + 7-byte pad + jam data.
-- Forth words: `KSHAPE`, `RECV-NOUN`, `SEND-NOUN`, `DISPATCH-FX`, `ARVO-LOOP`, `SHRINE-LOOP`, `KERNEL`.
-- No pill → falls back to REPL (QUIT). REPL remains debug escape hatch.
-- CI: `.github/workflows/ci.yml` — builds QEMU 9.2.0 from source (raspi4b support),
-  runs 158 REPL tests + 5 kernel boot integration tests (null/hint × arvo/shrine + no-pill).
-- `tools/jam.py`: stdlib-only Python jam/cue; `tools/mkpill.py -n <atom>` for decimal atoms.
+**Phase 5a/5b/5c/5d: COMPLETE** — Jam/cue (`src/jam.c`). PILL loader (0x10000000).
+Hot jets wired. All 158 REPL tests passing.
+
+**Phase 6: COMPLETE** — Kernel loop: Arvo + Shrine shapes, UART framing, effect dispatch.
+PILL v2 format. Forth words: `KSHAPE`, `RECV-NOUN`, `SEND-NOUN`, `DISPATCH-FX`,
+`ARVO-LOOP`, `SHRINE-LOOP`, `KERNEL`.
+CI: QEMU 9.2.0 from source (raspi4b), 158 REPL tests + 5 kernel boot tests all passing.
 
 ## Immediate Tasks for This Agent
 
-- **Phase 7**: Implement SKA in C (`src/ska.c` / `src/ska.h`).
-  Reference: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon implementation).
-  Key types to port: `cape_t`, `sock_t`, `bell_t`, `nomm_t`, `glob_t`, `long_t` (analysis state).
-  Algorithm: `scan` pass (symbolic eval) → Tarjan SCC (loop detection) → `cook` pass (jet wiring).
-  See ROADMAP.md Phase 7 for full data structure sketches and algorithm overview.
+**Phase 7: Implement SKA in C** — 8 stages, see ROADMAP.md for full detail.
 
-- **Phase 8**: Move Nock dispatch into Forth dictionary (after Phase 7 is proven).
+The stages in order (each builds on the previous):
+1. **7a** `src/ska.h` — types: `cape_t`, `sock_t`, `nomm_t`, `nomm1_t`, `bell_t`, `short_t`, `long_t`, `cycle_t`
+2. **7b** `src/ska.c` — cape/sock ops: `cape_app`, `sock_pull`, `sock_huge`, `sock_knit`, `sock_purr`, `sock_darn`, `dunno`
+3. **7c** `src/ska.c` — scan pass for linear opcodes (all except loop case; `%2` emits `%i2` conservatively)
+4. **7d** `src/ska.c` — memo cache (cross-arm, keyed by `(formula, sub-sock)`)
+5. **7e** `src/ska.c` — loop detection: `close()` heuristic, `add_frond()`, frond validation, redo-loop
+6. **7f** `src/ska.c` — cook pass: `nomm → nomm-1`, wire `%ds2` sites to `hot_state[]`
+7. **7g** `src/nock.c` + `src/forth.s` — `ska_analyze()`, SKA cache in `nock_eval`, Forth words `SKA`/`.SKA`
+8. **7h** `tests/run_tests.sh` — SKA-specific tests
 
-## Future: Nock Evaluator in Forth (Phase 5+)
+**Phase 8** (after 7): Move Nock dispatch into Forth dictionary (see below).
 
-The Nock evaluator currently lives in C (`src/nock.c`) and is called from Forth via `bl nock`.
-Moving it to Forth is possible and aligns with the project thesis:
+## SKA Layer Relationship
 
-- The opcode switch becomes a dispatch table of execution tokens indexed by opcode.
-- `goto loop` TCO becomes `BEGIN ... AGAIN` with `EXIT` for early returns — more natural in Forth.
-- Jets would then be ordinary Forth dictionary entries installed at runtime from the REPL, with no
-  C recompilation or reflash required.
-- **The Forth dictionary IS the jet dashboard** — a jet is just a word with the right name.
-- C stays for: allocator (`noun.c`), UART, and performance-critical jets.
-- Only the *dispatch logic* moves to Forth.
+SKA sits between the Forth layer and the Nock evaluator, as a one-time analysis pass at load time:
 
-Do this after Phase 5, once jets are proven out and the evaluator is mostly bypassed for production code.
+```
+PILL load
+    │
+    ▼
+ska_analyze(kernel, formula)         ← runs ONCE at boot
+    │  produces nomm-1 AST (C structs on heap)
+    │  %ds2 sites wired to hot_state[] fn pointers
+    ▼
+cached by formula in a hash map
+    │
+    ▼
+Forth KERNEL word → NOCK word → nock_eval()
+                                    │
+                         checks SKA cache
+                          ┌───────────┤
+                        hit           miss
+                          │           │
+                     run_nomm1()   nock_eval() as before
+                          │
+               %ds2 → direct C call (no sock_match)
+               %i2  → nock_eval() fallback
+```
+
+**The Forth layer does not change structurally** — only two new words are added.
+**`%wild` and SKA are complementary**: `%wild` provides runtime subject knowledge
+(which batteries are present); SKA uses that to classify every call site statically.
+
+**Phase 8** goes further: the `cook` pass resolves `%ds2` sites to Forth dictionary
+entries by label, not `hot_state[]` C pointers. A jet becomes a named Forth word.
+Redefine the word at the REPL → the next `SKA` call rewires the call site immediately.
+
+## Future: Forth as Jet Dashboard (Phase 8)
+
+In Phase 8, jets are ordinary Forth dictionary entries. The `cook` pass looks up the
+label string in the Forth dictionary instead of `hot_state[]`. This gives:
+
+- **Live-patchable jets**: redefine a word at the REPL → immediately available.
+- **No recompilation**: add/change jets without reflashing.
+- **Introspection**: `.SKA` prints every `%ds2` site and which Forth word it calls.
+- **The Forth dictionary IS the jet dashboard** — this is the thesis.
+
+C stays for: allocator (`noun.c`), UART, performance-critical inner-loop jets.
+Only the *dispatch decision* moves to Forth.
 
 ## Noun Representation
 
@@ -317,75 +321,73 @@ Notes:
   the correct representation. The atom store hot cache maps 62-bit hash → atom struct;
   the cold store (Phase 6) backs this with SD card block I/O.
 
-## BLAKE3 Plan
-
-- **Hash function**: BLAKE3, truncated to 62 bits for type-11 content atoms.
-- **Why BLAKE3**: Merkle tree structure allows hashing 4GB+ atoms in 1KB streaming
-  chunks without full RAM residency. Same hash regardless of chunk boundaries.
-- **Implementation**: Roll our own C implementation from the BLAKE3 spec (Nockchain
-  uses Rust; the official reference C implementation is the closest starting point).
-  Target: `src/blake3.c` + `src/blake3.h`, no libc, no SIMD required initially.
-  Core is ~400 lines: G mixing function (7 rounds), chunk compression, Merkle parents.
-- **When needed**: Phase 4b (after bignum arithmetic). Phase 2 allocates type-10 atoms
-  with the hash field zeroed; hashing is deferred until Phase 4b.
-
-## Phase 2 Implementation Order
-
-```
-Phase 2a  src/noun.h      — tag constants, NOUN typedef, pack/unpack macros
-Phase 2b  src/noun.c      — alloc_cell(), cell_inc(), cell_dec()
-                            alloc_indirect() — hash field left zero
-Phase 2c  src/forth.s     — CONS, CAR, CDR, ATOM?, CELL?, =noun Forth words
-Phase 2d  smoke test       — 1 2 CONS CDR . → 2 etc.
-```
-
 ## Subject Knowledge Analysis (Phase 7)
 
-Reference implementation: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon).
+Reference: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) — `desk/lib/skan.hoon`
+(2300 lines), `desk/sur/noir.hoon` (types), `desk/sur/sock.hoon` (`$cape`/`$sock`).
 Paper: Afonin ~dozreg-toplud, "Subject Knowledge Analysis", UTJ Vol. 3 Issue 1.
 
-SKA is a static analysis pass that takes a `(subject, formula)` pair and produces:
-1. A **`$nomm` annotated AST** — every Nock 2/9 site tagged as indirect (`%i2`), direct-safe
-   (`%ds2`), or direct-unsafe (`%dus2`), each with a `glob` call-site ID.
-2. A **`$cape` subject mask** — which axes of the subject are used *as code*.
+### Algorithm overview
 
-**How it works**: Run a partial Nock interpreter symbolically. Subject is `$sock = (cape, data)` where
-unknown parts are stubbed with 0. Propagate known information through the formula tree. At each
-Nock 2 site, if the formula operand is fully known, record the callee and enter a new analysis frame;
-if not, mark the call indirect and return unknown result.
+**Input**: `(subject: sock, formula: *)` — partial knowledge of the subject + the formula.
 
-**Why it matters for Fock**:
+**Pass 1 — `scan`**: Symbolic partial evaluator. For each opcode, propagates `sock`
+(partial knowledge of the noun at that point):
+- `%0 ax` → `sock_pull(sub, ax)` — extract knowledge of sub-noun at axis
+- `%1 val` → known constant
+- `%6 c y n` → `sock_purr(prod_y, prod_n)` — intersection of branches
+- `%7 p q` → compose — `prod_p` becomes subject for `q`
+- `%9 ax f` → desugar to `[%7 f %2 [%0 1] %0 ax]`
 
-- **Jet matching becomes compile-time**: Walk the call graph once; at each direct call site compute
-  the battery hash and look it up in the Forth dictionary. If found, annotate the call with a direct
-  Forth word pointer. No per-call hash lookup at runtime.
-- **Direct calls**: Annotated direct calls skip the full `nock()` eval and dispatch straight to the
-  callee's Forth word or compiled bytecode. Paper reports ~1.7× speedup.
-- **Correct cache keying**: Cache key is `(masked_subject, formula)` not `(full_subject, formula)`.
-  Without the mask, changing a counter value in the subject causes a cache miss even when the code
-  hasn't changed. The mask says "only these axes matter for the call graph."
-- **Nomm**: SKA output is annotated Nock where Nock 2 sites carry `info=(unit [sock formula])`.
-  Our equivalent: a Forth word whose body contains direct `bl` instructions to known call targets.
+For `%2 p q` — the key case:
+- If `cape(prod_q) ≠ &` (formula expression not fully known): emit **`%i2`** (indirect)
+- If formula known: check memo cache → check melo (within-cycle) cache →
+  check loop heuristic (`close()`) → recurse and emit **`%ds2`** or **`%dus2`**
 
-**Loop handling (required, not optional)**: A naive partial evaluator loops forever on `dec`.
-Must detect backedges (Tarjan SCC), defer fixpoint search to SCC exit, then validate.
+**Loop detection** (`close()` heuristic): When the same formula appears in the current
+call stack with a compatible subject, guess it's a back-edge. Record the parent-kid pair
+in `cycles`. On cycle exit, validate the assumption: the differing parts of the subject
+must NOT be used as code. If wrong, add the pair to `block_loop` and **redo** the scan.
+This correctly handles `dec`, `add`, and all tail-recursive Hoon gates.
 
-**When to implement**: Phase 5. Entry point is the `%wild` hint (see Jet Architecture below).
-The `$cape` boolean-tree type needs to be added to `noun.h`.
+**Pass 2 — `cook`**: Converts `nomm` → `nomm-1`. Resolves `%ds2`/`%dus2` site
+references to concrete `[less-sock, formula]` pairs. Matches against `hot_state[]`
+by label → stores `jet_fn_t` pointer.
 
-**Indirect call exceptions** (rare): over-the-wire code, Nock 12, vase-mode Hoon compiler.
-All other Arvo/Gall code is fully analyzable statically.
+### Key types
+
+```c
+// $cape: boolean tree mask (& = known, | = wildcard)
+typedef struct cape_s cape_t;
+struct cape_s { bool is_atom; union { bool known; struct { cape_t *h, *t; }; }; };
+
+// $sock: partial knowledge of a noun
+typedef struct { cape_t *cape; noun data; } sock_t;
+
+// $bell: call site identity
+typedef struct { sock_t bus; noun fol; } bell_t;
+
+// $nomm: annotated Nock AST (Nock-2 split into three variants)
+typedef enum {
+    NOMM_0, NOMM_1, NOMM_I2, NOMM_DS2, NOMM_DUS2,
+    NOMM_3, NOMM_4, NOMM_5, NOMM_6, NOMM_7,
+    NOMM_10, NOMM_S11, NOMM_D11, NOMM_12
+} nomm_tag_t;
+```
+
+### What we are NOT porting
+
+- `%fast` hint processing — `%fast` is intentionally ignored; `%wild` is sole mechanism
+- `$source` provenance tracking — use conservative `cape = &` initially; optimize later
+- `++find-args` argument minimization — optimization, not needed for correctness
+- Tarjan SCC (`++find-sccs`) — only used by `find-args`, not main scan/cook flow
+- `++ka.rout` queue management — driven by `%fast` cold state discovery
 
 ## Jet Architecture (`%wild` + SKA — first-class citizens)
 
-**Decided**: We do NOT implement `%fast` cold-state accumulation. It is a stateful memory leak by design.
-Instead, `%wild` (UIP-0122, ~ritpub-sipsyl) is the sole jet registration mechanism.
-
-### Why `%wild` over `%fast`
-
-`%fast` is a side effect disguised as a hint: it mutates a global `battery_hash → label` table that
-can never be safely pruned and cannot migrate between piers without re-running introduction forms.
-`%wild` embeds the necessary cold-state slice *directly in the Nock*, scoped to the hinted computation.
+**Decided**: We do NOT implement `%fast` cold-state accumulation. It is a stateful memory
+leak by design. Instead, `%wild` (UIP-0122, ~ritpub-sipsyl) is the sole jet registration
+mechanism. `%wild` embeds cold-state directly in the Nock, scoped to the hinted computation.
 
 ### `%wild` clue structure
 
@@ -395,94 +397,57 @@ can never be safely pruned and cannot migrate between piers without re-running i
 +$  wilt  (list [l=* s=sock])      ::  list of [label sock] registrations
 ```
 
-The `%wild` dynamic hint clue is a `$wilt` noun (constant — the clue formula MUST be `[1 clue]`).
-The `cape`/`sock` types are identical to those used by SKA. This is intentional — `%wild` is
-essentially a way to ship SKA output (subject masks + labels) inside the Nock itself.
+The `cape`/`sock` types are identical to those used by SKA. `%wild` is essentially a way
+to ship SKA output (subject masks + labels) inside the Nock itself.
 
 ### Sock matching
 
 ```
 match(cape, data, noun):
-    cape == &(0)     →  noun == data           (exact match required)
-    cape == |(1)     →  true                   (wildcard, any noun matches)
-    cape is cell, noun is atom  →  false       (structural mismatch)
-    cape is cell, noun is cell  →  match(cape.h, data.h, noun.h)
-                                && match(cape.t, data.t, noun.t)
+    cape == &  →  noun == data           (exact match required)
+    cape == |  →  true                   (wildcard)
+    cape is cell, noun is atom  →  false
+    cape is cell, noun is cell  →  match(h, h) && match(t, t)
 ```
 
-Battery position (axis 2) is always `cape=&` (must match exactly). Sample/payload is `cape=|` (wildcard).
-This means a jet fires for any gate with the right battery, regardless of what's in the sample.
+Battery (axis 2) is always `cape=&`. Sample/payload is `cape=|`.
+A jet fires for any gate with the right battery, regardless of sample.
 
-### Evaluator signature (target)
-
-```c
-noun nock(noun subject, noun formula, const wilt_t *jets, sky_fn_t sky);
-```
-
-- `jets`: current scoped `$wilt` registrations (NULL = none). Lives on the C stack, scoped automatically.
-- `sky`: scry handler (NULL = crash on op 12). Added in Phase 3b.
-- `%wild` hint fires → parse clue → pass new `wilt_t*` into recursive calls → scope exits when call returns.
-
-### Hot state (compile-time, lives in the binary)
-
-```c
-typedef noun (*jet_fn_t)(noun core);
-typedef struct { const char *label; jet_fn_t fn; } hot_entry_t;
-static const hot_entry_t hot_state[] = {
-    { "/dec/one/vial", jet_dec },
-    { "/add/one/vial", jet_add },
-    // ...
-};
-```
-
-Jet functions are C (or Forth words via ABI-compatible wrapper). No dynamic registration — the hot
-state is fixed at compile time. `%wild` provides the runtime bridge from label → matched core.
-
-### Dispatch at op 9
+### Dispatch at op 9 (current — runtime sock_match)
 
 ```
-op 9 fires:
-    core = nock(subject, c_formula, jets, sky)
-    arm  = slot(b, core)
-    if jets != NULL:
-        for each [label sock] in jets:
-            if match(sock.cape, sock.data, core):
-                jet = hot_lookup(label)
-                if jet: return jet(core)   ← bypass Nock
-    subject = core; formula = arm; goto loop
+core = nock(subject, c_formula, jets, sky)
+arm  = slot(b, core)
+if jets != NULL:
+    for each [label sock] in jets:
+        if sock_match(sock.cape, sock.data, core):
+            jet = hot_lookup(label)
+            if jet: return jet(core)   ← bypass Nock
+subject = core; formula = arm; goto loop
 ```
 
-### Phase plan for jet infrastructure
+### Dispatch at op 9 (Phase 7 — SKA annotated)
 
-| Phase | Work |
-|---|---|
-| **11a** | Op 11 in `nock.c`; hint dispatch table; `%wild` handler parses `$wilt` |
-| **11b** | Sock matching (`noun_match`); `wilt_t` struct; pass through evaluator |
-| **11c** | Op 9 dispatch hook; hot state table; first jets (`dec`, `add`) |
-| **11d** | Forth words: `.JETS`, `.WILT`, jet hit counters |
-| **5** | SKA: symbolic partial evaluator, annotated Nock, compile-time jet matching |
-
-### Compatibility note
-
-We will NOT implement `%fast` cold-state machinery. If we ever need to interop with Hoon-compiled
-Nock that emits `%fast` hints, we silently ignore them (correct: `%fast` is purely advisory).
-`%wild` hints from future Hoon tooling are the target.
+```
+core = run_nomm1(subject, c_nomm1, ...)  // %ds2 already resolved to jet_fn_t
+// no sock_match needed — analysis already wired direct call sites
+```
 
 ## Architecture Decisions (do not reverse without understanding the rationale)
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| UART driver | PL011 at 0x3F201000 | QEMU raspi3b emulates PL011, not mini-UART |
-| Atom tag scheme | 2-bit tag, 4 types | Covers direct/indirect/content; see Noun Representation |
-| Large atom identity | BLAKE3 content hash (62 bits) | Enables O(1) equality, structural sharing, SD-card backing for 4GB+ atoms |
+| UART driver | PL011 at 0x3F201000 | QEMU raspi4b emulates PL011, not mini-UART |
+| Atom tag scheme | bit 63 = 0 → direct; tag 10 → indirect; tag 11 → cell | Direct atoms are raw integers; simplifies arithmetic |
+| Large atom identity | BLAKE3 content hash (62 bits) | O(1) equality, structural sharing, SD-card backing for 4GB+ atoms |
 | Memory model | Arena + refcount heap | No stop-world GC; event arena reset after each +poke |
-| Noun stack | Separate from Forth stacks | GC root discipline; no mixed-type stack bugs |
 | Jets | `%wild` + SKA, hot state in C binary | Stateless registration; no cold-state accumulation; `%fast` intentionally NOT implemented |
+| SKA loop detection | Heuristic stack scan + frond validation + redo | Matches skan.hoon; no Tarjan SCC needed for main flow |
 | Loom/road | REJECTED | 32-bit legacy; replaced by 64-bit arena+refcount |
 | Bignum | Roll our own (Phase 4) | FSL bignum is wrong license; other options unsuitable |
 | BLAKE3 | Roll our own C (Phase 4b) | Nockchain is Rust; reference C impl is the base |
 | Forth kernel | Hand-written AArch64 asm | No suitable MIT-licensed vendorable option |
-| Kernel noun shape | Deferred | Arvo (+poke) vs Shrine (x/y/z queries) — decide before Phase 6 |
+| Kernel noun shape | Both Arvo and Shrine supported | Shape byte in PILL header selects at load time |
 
 ## Phase Plan Summary
 
@@ -505,17 +470,20 @@ Nock that emits `%fast` hints, we silently ignore them (correct: `%fast` is pure
 | 7 | SKA: symbolic partial eval, `$nomm` AST, compile-time jet matching | TODO |
 | 8 | Forth as jet dashboard: evaluator dispatch in dictionary | TODO |
 
-PoC gate: Phases 0-5. Everything after is "turning it into an OS."
+PoC gate: Phases 0-7. Phase 8 is "turning it into a live-patchable OS."
 
 ## Key Source References in the Codebase
 
-- `src/memory.h` — single source of truth for all region boundaries
-- `src/noun.h`   — noun tag constants, NOUN typedef, pack/unpack macros (Phase 2+)
-- `src/noun.c`   — cell/atom allocators, refcount (Phase 2+)
-- `src/forth.s`  — Forth kernel: inner interpreter, primitives, QUIT, control flow
-- `src/boot.s`   — entry at `_start`, parks cores 1-3, zeros BSS, calls `main`
-- `src/uart.c`   — PL011 UART init/read/write (no GPIO mux — QEMU doesn't need it)
-- `src/main.c`   — writes stack canary, calls `forth_main`
+- `src/memory.h`   — single source of truth for all region boundaries
+- `src/noun.h`     — noun tag constants, NOUN typedef, pack/unpack macros
+- `src/noun.c`     — cell/atom allocators, refcount
+- `src/nock.c`     — Nock 4K evaluator, op 11 hints, `%wild` dispatch, hot jets
+- `src/ska.h`      — SKA types: `cape_t`, `sock_t`, `nomm_t`, `bell_t`, `short_t`, `long_t` (Phase 7+)
+- `src/ska.c`      — SKA scan/cook passes, cape/sock ops (Phase 7+)
+- `src/forth.s`    — Forth kernel: inner interpreter, primitives, QUIT, control flow
+- `src/boot.s`     — entry at `_start`, parks cores 1-3, zeros BSS, calls `main`
+- `src/uart.c`     — PL011 UART init/read/write
+- `src/main.c`     — writes stack canary, calls `forth_main`
 
 ## What This Is NOT
 
