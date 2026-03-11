@@ -46,3 +46,15 @@ __attribute__((noreturn)) void nock_crash(const char *msg);
 noun nock(noun subject, noun formula);
 noun nock_ex(noun subject, noun formula, const wilt_t *jets, sky_fn_t sky);
 noun slot(noun axis, noun subject);
+
+/*
+ * nock_op9_continue: complete an op-9 invocation starting from an already-
+ * evaluated core.  Checks the active %wild registrations; if a jet matches,
+ * dispatches directly.  Otherwise slots the arm at `ax` from `core` and
+ * evaluates (core, arm) via TCO.
+ *
+ * Used by eval_nomm in ska.c so that NOMM_9 nodes benefit from jet dispatch
+ * without having to re-evaluate the core formula through nock_eval.
+ */
+noun nock_op9_continue(noun core, noun ax,
+                       const wilt_t *jets, sky_fn_t sky);

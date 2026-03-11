@@ -84,22 +84,23 @@ typedef struct {
  * optional jet pointer.
  */
 typedef enum {
-    NOMM_0,    /* slot    — [p=ax]            */
-    NOMM_1,    /* quote   — [p=val]           */
-    NOMM_2,    /* eval    — (only in nomm1)   */
-    NOMM_3,    /* cell?   — [p]               */
-    NOMM_4,    /* inc     — [p]               */
-    NOMM_5,    /* eq?     — [p q]             */
-    NOMM_6,    /* if      — [p y n]           */
-    NOMM_7,    /* compose — [p q]             */
-    NOMM_8,    /* push    — [p q]             */
-    NOMM_9,    /* invoke  — [ax f]            */
-    NOMM_10,   /* hint    — [p q]             */
-    NOMM_11,   /* hint    — [tag fml]         */
-    NOMM_12,   /* scry    — [p]               */
-    NOMM_I2,   /* indirect call               */
-    NOMM_DS2,  /* direct-safe call            */
-    NOMM_DUS2, /* direct-unsafe call          */
+    NOMM_0,    /* slot      — [0 ax]                          */
+    NOMM_1,    /* quote     — [1 val]                         */
+    NOMM_2,    /* eval      — only in nomm1; see i2/ds2/dus2  */
+    NOMM_3,    /* cell?     — [3 p]                           */
+    NOMM_4,    /* inc       — [4 p]                           */
+    NOMM_5,    /* eq?       — [5 p q]                         */
+    NOMM_6,    /* if        — [6 c y n]                       */
+    NOMM_7,    /* compose   — [7 p q]                         */
+    NOMM_8,    /* push      — [8 p q]                         */
+    NOMM_9,    /* invoke    — [9 ax core_fol]                 */
+    NOMM_10,   /* hax/edit  — [10 [ax val_fol] tgt_fol]       */
+    NOMM_11,   /* hint      — [11 {tag clue?} main_fol]       */
+    NOMM_12,   /* scry      — [12 [ref_fol thunk_fol]]        */
+    NOMM_DIST, /* autocons  — [[p_fol] q_fol]                 */
+    NOMM_I2,   /* indirect call — neither sub nor fol known   */
+    NOMM_DS2,  /* direct-safe   — formula is %0 or %1 literal */
+    NOMM_DUS2, /* direct-unsafe — formula statically known    */
 } nomm_tag_t;
 
 /* Forward declaration for recursive type. */
@@ -112,20 +113,34 @@ struct nomm_s {
         struct { noun ax; } n0;
         /* NOMM_1: quote */
         struct { noun val; } n1;
-        /* NOMM_3, NOMM_4, NOMM_12: unary */
+        /* NOMM_3, NOMM_4: unary sub-formula */
         struct { nomm_t *p; } n_unary;
-        /* NOMM_5, NOMM_7, NOMM_8, NOMM_9, NOMM_10, NOMM_11: binary */
-        struct { nomm_t *p; nomm_t *q; } n_binary;
-        /* NOMM_6: ternary */
+        /* NOMM_5: equality [5 p q] — two independent sub-formulas */
+        struct { nomm_t *p; nomm_t *q; } n5;
+        /* NOMM_6: if-then-else */
         struct { nomm_t *c; nomm_t *y; nomm_t *n; } n6;
+        /* NOMM_7: compose [7 p q] — q evaluated on p's product */
+        struct { nomm_t *p; nomm_t *q; } n7;
+        /* NOMM_8: push [8 p q] — q evaluated on [*[a p] a] */
+        struct { nomm_t *p; nomm_t *q; } n8;
+        /* NOMM_9: arm invoke [9 ax core_fol] */
+        struct { noun ax; nomm_t *core_fol; } n9;
+        /* NOMM_10: hax tree-edit [10 [ax val_fol] tgt_fol] */
+        struct { noun ax; nomm_t *val_fol; nomm_t *tgt_fol; } n10;
+        /* NOMM_11: hint — static ([11 tag main]) or dynamic ([11 [tag clue] main]) */
+        struct { noun tag; nomm_t *clue; nomm_t *main; bool is_dyn; } n11;
+        /* NOMM_12: scry [12 [ref_fol thunk_fol]] */
+        struct { nomm_t *ref_fol; nomm_t *thunk_fol; } n12;
+        /* NOMM_DIST: autocons [[p_fol] q_fol] — head and tail are separate formulas */
+        struct { nomm_t *p; nomm_t *q; } ndist;
         /* NOMM_I2: indirect call — subject and formula both dynamic */
         struct { nomm_t *p; nomm_t *q; } i2;
-        /* NOMM_DS2: direct safe — subject dynamic, formula is %0/%1 literal */
+        /* NOMM_DS2: direct safe — formula is %0 or %1 literal */
         struct { nomm_t *p; glob_t glob; } ds2;
-        /* NOMM_DUS2: direct unsafe — both dynamic, formula statically known */
+        /* NOMM_DUS2: direct unsafe — formula statically known but complex */
         struct { nomm_t *p; nomm_t *q; glob_t glob; } dus2;
     };
-    /* Scan-pass annotation: what the evaluator knows about the product. */
+    /* Scan-pass annotation: evaluator's knowledge of the product noun. */
     sock_t prod;
 };
 
@@ -141,8 +156,15 @@ struct nomm1_s {
         struct { noun ax; } n0;
         struct { noun val; } n1;
         struct { nomm1_t *p; } n_unary;
-        struct { nomm1_t *p; nomm1_t *q; } n_binary;
+        struct { nomm1_t *p; nomm1_t *q; } n5;
         struct { nomm1_t *c; nomm1_t *y; nomm1_t *n; } n6;
+        struct { nomm1_t *p; nomm1_t *q; } n7;
+        struct { nomm1_t *p; nomm1_t *q; } n8;
+        struct { noun ax; nomm1_t *core_fol; } n9;
+        struct { noun ax; nomm1_t *val_fol; nomm1_t *tgt_fol; } n10;
+        struct { noun tag; nomm1_t *clue; nomm1_t *main; bool is_dyn; } n11;
+        struct { nomm1_t *ref_fol; nomm1_t *thunk_fol; } n12;
+        struct { nomm1_t *p; nomm1_t *q; } ndist;
         /* NOMM_2: unified call site (was i2 / ds2 / dus2 before cook) */
         struct {
             nomm1_t  *p;            /* subject formula */
@@ -298,21 +320,28 @@ typedef struct {
 
 /* ── Public API ──────────────────────────────────────────────────────────────
  *
+ * ska_nock(subject, formula, jets, sky) → noun
+ *   Analyze (subject, formula) with the scan pass, then evaluate the
+ *   resulting nomm_t AST.  Gives identical answers to nock_eval() but with
+ *   jet dispatch at statically-identified call sites.
+ *   This is the primary entry point for all SKA-evaluated Nock.
+ *
  * ska_analyze(subject, formula, jets, sky) → boil_t*
- *   Run scan + cook passes on (subject, formula).
+ *   Run scan + cook passes only (no evaluation).
  *   Returns NULL on hard failure (e.g., allocation exhaustion).
- *   jets: active %wild wilt (may be NULL).  sky: scry handler (may be NULL).
  *
  * run_nomm1(nomm1, subject, jets, sky) → noun
- *   Interpret a cooked nomm1 AST.  Dispatches jets at %ds2 sites.
- *   Falls back to nock_eval() at %i2 sites.
+ *   Interpret a cooked nomm1 AST.  Dispatches jets at annotated %2 sites.
+ *   Falls back to nock_eval() at unannotated (indirect) %2 sites.
  */
+noun    ska_nock(noun subject, noun formula,
+                 const wilt_t *jets, sky_fn_t sky);
+
 boil_t *ska_analyze(noun subject, noun formula,
                     const wilt_t *jets, sky_fn_t sky);
 
 noun    run_nomm1(const nomm1_t *n, noun subject,
                   const wilt_t *jets, sky_fn_t sky);
 
-/* Allocate / free analysis structures from a bump arena.
- * ska_arena_reset() reclaims all nomm_t / nomm1_t / boil_t allocations. */
+/* Reclaim all nomm_t / nomm1_t / boil_t arena allocations. */
 void  ska_arena_reset(void);

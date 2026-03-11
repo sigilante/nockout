@@ -1674,6 +1674,19 @@ defcode "NOCK", 4, nock, 0
     str     x0, [DSP, #-8]!
     NEXT
 
+// SKNOCK ( subject formula -- product )  SKA-analyzed Nock evaluator
+// Runs the SKA scan pass over the formula, then evaluates the nomm_t AST.
+// Gives identical results to NOCK but with static jet dispatch at annotated
+// call sites.  Falls back to nock_ex() for op 9 / indirect op 2 sites.
+defcode "SKNOCK", 6, sknock, 0
+    ldr     x1, [DSP], #8       // x1 = formula
+    ldr     x0, [DSP], #8       // x0 = subject
+    mov     x2, #0              // jets = NULL
+    mov     x3, #0              // sky  = NULL
+    bl      ska_nock            // ska_nock(subject, formula, NULL, NULL)
+    str     x0, [DSP, #-8]!
+    NEXT
+
 // ═════════════════════════════════════════════════════════════════════════════
 // QUIT — the top-level interpreter loop
 // ═════════════════════════════════════════════════════════════════════════════

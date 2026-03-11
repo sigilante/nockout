@@ -14,6 +14,10 @@
 
 #include "ska.h"
 #include "noun.h"
+#include "nock.h"
+#include "bignum.h"
+#include "uart.h"
+#include "noun.h"
 #include "uart.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -306,4 +310,561 @@ sock_t sock_darn(sock_t s, noun ax, sock_t edit)
                            : sock_pull(cur, direct(3));
     sock_t new_cur = sock_knit(new_h, new_t);
     return sock_darn(s, direct(parent), new_cur);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Stage 7c — Scan pass (linear opcodes; op 2 / op 9 fall back to NOMM_I2)
+ *
+ * scan(sub, fol) → nomm_t*
+ *   sub : current subject sock (what we know about the subject at this point)
+ *   fol : formula noun to analyse
+ *   Returns annotated nomm_t*.  Each node carries a `prod` sock recording
+ *   what the evaluator knows about the result of this sub-formula.
+ *
+ * Reference: skan.hoon ++scan / ++scan-1 arms.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Helper: allocate and zero-init a nomm_t node from the arena. */
+static nomm_t *nomm_alloc(void)
+{
+    return (nomm_t *)ska_alloc(sizeof(nomm_t));
+}
+
+/* Forward declaration for mutual recursion. */
+static nomm_t *scan(sock_t sub, noun fol);
+
+/*
+ * scan_cell: scan a formula that has already been unpacked into (head, tail).
+ * Handles the distribution rule and all named opcodes.
+ */
+static nomm_t *scan_cell(sock_t sub, noun head, noun tail)
+{
+    nomm_t *n = nomm_alloc();
+    if (!n) return NULL;
+
+    /* ── Distribution rule: *[a [b c] d] = [*[a b c] *[a d]] ── */
+    if (noun_is_cell(head)) {
+        nomm_t *p = scan(sub, head);
+        nomm_t *q = scan(sub, tail);
+        if (!p || !q) return NULL;
+        n->tag    = NOMM_DIST;
+        n->ndist.p = p;
+        n->ndist.q = q;
+        n->prod   = sock_knit(p->prod, q->prod);
+        return n;
+    }
+
+    /* head must be a direct atom — the opcode */
+    if (!noun_is_direct(head)) {
+        uart_puts("ska: non-direct opcode\n");
+        return NULL;
+    }
+    uint64_t op = direct_val(head);
+
+    switch (op) {
+
+    /* ── 0: slot /[b a] ── */
+    case 0:
+        n->tag    = NOMM_0;
+        n->n0.ax  = tail;
+        n->prod   = sock_pull(sub, tail);
+        return n;
+
+    /* ── 1: quote b ── */
+    case 1:
+        n->tag     = NOMM_1;
+        n->n1.val  = tail;
+        n->prod    = sock_known(tail);
+        return n;
+
+    /* ── 2: eval *[*[a b] *[a c]] — conservative NOMM_I2 at Stage 7c ── */
+    case 2: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op2 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        nomm_t *p = scan(sub, args->head);   /* subject formula  */
+        nomm_t *q = scan(sub, args->tail);   /* formula formula  */
+        if (!p || !q) return NULL;
+        n->tag   = NOMM_I2;
+        n->i2.p  = p;
+        n->i2.q  = q;
+        n->prod  = sock_dunno(sub);
+        return n;
+    }
+
+    /* ── 3: cell? ?*[a b] ── */
+    case 3: {
+        nomm_t *p = scan(sub, tail);
+        if (!p) return NULL;
+        n->tag       = NOMM_3;
+        n->n_unary.p = p;
+        n->prod      = (sock_t){ .cape = cape_wild(), .data = NOUN_ZERO };
+        return n;
+    }
+
+    /* ── 4: inc +*[a b] ── */
+    case 4: {
+        nomm_t *p = scan(sub, tail);
+        if (!p) return NULL;
+        n->tag       = NOMM_4;
+        n->n_unary.p = p;
+        n->prod      = (sock_t){ .cape = cape_wild(), .data = NOUN_ZERO };
+        return n;
+    }
+
+    /* ── 5: eq =[*[a b] *[a c]] ── */
+    case 5: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op5 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        nomm_t *p = scan(sub, args->head);
+        nomm_t *q = scan(sub, args->tail);
+        if (!p || !q) return NULL;
+        /* If both products are KNOWN and equal, result is KNOWN NOUN_YES. */
+        sock_t prod;
+        if (cape_is_known(p->prod.cape) && cape_is_known(q->prod.cape) &&
+            noun_eq(p->prod.data, q->prod.data))
+            prod = sock_known(NOUN_YES);
+        else
+            prod = (sock_t){ .cape = cape_wild(), .data = NOUN_ZERO };
+        n->tag    = NOMM_5;
+        n->n5.p   = p;
+        n->n5.q   = q;
+        n->prod   = prod;
+        return n;
+    }
+
+    /* ── 6: if-then-else [6 c y n] ── */
+    case 6: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op6 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        noun cond_fol = args->head;
+        if (!noun_is_cell(args->tail)) {
+            uart_puts("ska: op6 missing branches\n");
+            return NULL;
+        }
+        cell_t *branches = (cell_t *)(uintptr_t)cell_ptr(args->tail);
+        nomm_t *c = scan(sub, cond_fol);
+        nomm_t *y = scan(sub, branches->head);
+        nomm_t *nn = scan(sub, branches->tail);
+        if (!c || !y || !nn) return NULL;
+        /* If condition is KNOWN, result is the known branch. */
+        sock_t prod;
+        if (cape_is_known(c->prod.cape)) {
+            if (noun_eq(c->prod.data, NOUN_YES))
+                prod = y->prod;
+            else
+                prod = nn->prod;
+        } else {
+            prod = sock_purr(y->prod, nn->prod);
+        }
+        n->tag  = NOMM_6;
+        n->n6.c = c;
+        n->n6.y = y;
+        n->n6.n = nn;
+        n->prod = prod;
+        return n;
+    }
+
+    /* ── 7: compose *[*[a b] c] ── */
+    case 7: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op7 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        nomm_t *p = scan(sub, args->head);
+        if (!p) return NULL;
+        /* q is evaluated against p's product — pass p->prod as subject */
+        nomm_t *q = scan(p->prod, args->tail);
+        if (!q) return NULL;
+        n->tag  = NOMM_7;
+        n->n7.p = p;
+        n->n7.q = q;
+        n->prod = q->prod;
+        return n;
+    }
+
+    /* ── 8: push *[[*[a b] a] c] ── */
+    case 8: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op8 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        nomm_t *p = scan(sub, args->head);
+        if (!p) return NULL;
+        /* New subject is [*[a b], a] — knit product with original subject */
+        sock_t pushed_sub = sock_knit(p->prod, sub);
+        nomm_t *q = scan(pushed_sub, args->tail);
+        if (!q) return NULL;
+        n->tag  = NOMM_8;
+        n->n8.p = p;
+        n->n8.q = q;
+        n->prod = q->prod;
+        return n;
+    }
+
+    /* ── 9: invoke *[*[a c] 2 [0 1] 0 b]
+     * Core = eval c; arm = slot(b, core); eval core as its own subject.
+     * At Stage 7c: arm could recurse, so emit NOMM_9 and fall back in eval.
+     * ── */
+    case 9: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op9 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        noun b          = args->head;     /* axis to pull arm from core */
+        nomm_t *core_fol = scan(sub, args->tail);
+        if (!core_fol) return NULL;
+        n->tag            = NOMM_9;
+        n->n9.ax          = b;
+        n->n9.core_fol    = core_fol;
+        n->prod           = sock_dunno(sub);
+        return n;
+    }
+
+    /* ── 10: hax tree-edit #[b *[a c] *[a d]]
+     * tail = [[b c] d] where b=axis (atom), c=val formula, d=target formula
+     * ── */
+    case 10: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op10 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        noun hint = args->head;
+        noun d    = args->tail;
+        if (!noun_is_cell(hint)) {
+            uart_puts("ska: op10 hint must be cell\n");
+            return NULL;
+        }
+        cell_t *hc  = (cell_t *)(uintptr_t)cell_ptr(hint);
+        noun b      = hc->head;   /* edit axis — must be direct atom */
+        nomm_t *val_fol = scan(sub, hc->tail);
+        nomm_t *tgt_fol = scan(sub, d);
+        if (!val_fol || !tgt_fol) return NULL;
+        /* Product: apply sock_darn if we know enough; else dunno. */
+        sock_t prod;
+        if (cape_is_known(tgt_fol->prod.cape) && cape_is_known(val_fol->prod.cape))
+            prod = sock_darn(tgt_fol->prod, b, val_fol->prod);
+        else
+            prod = sock_dunno(sub);
+        n->tag          = NOMM_10;
+        n->n10.ax       = b;
+        n->n10.val_fol  = val_fol;
+        n->n10.tgt_fol  = tgt_fol;
+        n->prod         = prod;
+        return n;
+    }
+
+    /* ── 11: hint
+     * Static:  [11 tag d]       → *[a d]         (tag is atom)
+     * Dynamic: [11 [tag clue] d] → hint fires, then *[a d]
+     * ── */
+    case 11: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op11 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
+        noun hint = args->head;
+        noun d    = args->tail;
+        nomm_t *main_fol = scan(sub, d);
+        if (!main_fol) return NULL;
+
+        if (!noun_is_cell(hint)) {
+            /* Static hint — tag is atom, no clue evaluation */
+            n->tag         = NOMM_11;
+            n->n11.tag     = hint;
+            n->n11.clue    = NULL;
+            n->n11.main    = main_fol;
+            n->n11.is_dyn  = false;
+            n->prod        = main_fol->prod;
+        } else {
+            /* Dynamic hint — hint = [tag clue_formula] */
+            cell_t *hc   = (cell_t *)(uintptr_t)cell_ptr(hint);
+            nomm_t *clue = scan(sub, hc->tail);
+            if (!clue) return NULL;
+            n->tag         = NOMM_11;
+            n->n11.tag     = hc->head;
+            n->n11.clue    = clue;
+            n->n11.main    = main_fol;
+            n->n11.is_dyn  = true;
+            n->prod        = main_fol->prod;
+        }
+        return n;
+    }
+
+    /* ── 12: scry .^[*[a b] *[a c]] ── */
+    case 12: {
+        if (!noun_is_cell(tail)) {
+            uart_puts("ska: op12 tail not cell\n");
+            return NULL;
+        }
+        cell_t *args    = (cell_t *)(uintptr_t)cell_ptr(tail);
+        nomm_t *ref_fol   = scan(sub, args->head);
+        nomm_t *thunk_fol = scan(sub, args->tail);
+        if (!ref_fol || !thunk_fol) return NULL;
+        n->tag              = NOMM_12;
+        n->n12.ref_fol      = ref_fol;
+        n->n12.thunk_fol    = thunk_fol;
+        n->prod             = sock_dunno(sub);
+        return n;
+    }
+
+    default:
+        uart_puts("ska: unknown opcode\n");
+        return NULL;
+    }
+}
+
+/*
+ * scan: top-level scan entry for one formula noun.
+ */
+static nomm_t *scan(sock_t sub, noun fol)
+{
+    if (!noun_is_cell(fol)) {
+        uart_puts("ska: formula is atom\n");
+        return NULL;
+    }
+    cell_t *fc = (cell_t *)(uintptr_t)cell_ptr(fol);
+    return scan_cell(sub, fc->head, fc->tail);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Stage 7c — eval_nomm: interpret a nomm_t AST
+ *
+ * Mirrors nock_eval() but dispatches on the nomm_t structure.
+ * Linear opcodes are handled natively; NOMM_I2 / NOMM_9 fall back to
+ * nock_eval() which has its own TCO loop.
+ *
+ * Note: extern nock_eval is not exposed in nock.h (it's static).
+ * We use the public nock_ex() / nock() shim instead.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── hax inline: tree edit #[a v t] ─────────────────────────────────────────
+ * Mirrors the static hax() in nock.c.  Used by eval_nomm for NOMM_10.
+ */
+static noun ska_hax(uint64_t a, noun new_val, noun target)
+{
+    if (a == 0) nock_crash("ska hax: axis 0");
+    if (a == 1) return new_val;
+    if (!noun_is_cell(target)) nock_crash("ska hax: edit in atom");
+
+    cell_t *t = (cell_t *)(uintptr_t)cell_ptr(target);
+    int d = 0;
+    uint64_t tmp = a;
+    while (tmp > 1) { tmp >>= 1; d++; }
+    int first = (int)((a >> (d - 1)) & 1);
+    uint64_t sub_ax = (a & ((1ULL << (d - 1)) - 1)) | (1ULL << (d - 1));
+
+    if (first == 0)
+        return alloc_cell(ska_hax(sub_ax, new_val, t->head), t->tail);
+    else
+        return alloc_cell(t->head, ska_hax(sub_ax, new_val, t->tail));
+}
+
+/* ── ska_parse_wilt: parse a $wilt noun into a wilt_t ───────────────────────
+ * Mirrors parse_wilt() in nock.c.
+ * $wilt = (list [label [cape data]])
+ */
+static void ska_parse_wilt(noun wilt_noun, wilt_t *out)
+{
+    out->len = 0;
+    while (noun_is_cell(wilt_noun) && out->len < WILT_MAX) {
+        cell_t *cons  = (cell_t *)(uintptr_t)cell_ptr(wilt_noun);
+        noun    elem  = cons->head;
+        wilt_noun     = cons->tail;
+
+        if (!noun_is_cell(elem)) continue;
+        cell_t *ep    = (cell_t *)(uintptr_t)cell_ptr(elem);
+        noun    label = ep->head;
+        noun    sock  = ep->tail;
+
+        if (!noun_is_cell(sock)) continue;
+        cell_t *sp    = (cell_t *)(uintptr_t)cell_ptr(sock);
+
+        out->e[out->len].label     = label;
+        out->e[out->len].sock.cape = sp->head;
+        out->e[out->len].sock.data = sp->tail;
+        out->len++;
+    }
+}
+
+/* Helper: forward a full nock call through the public nock_ex shim. */
+static inline noun fallback(noun subj, noun fml,
+                             const wilt_t *jets, sky_fn_t sky)
+{
+    return nock_ex(subj, fml, jets, sky);
+}
+
+static noun eval_nomm(const nomm_t *n, noun sub,
+                      const wilt_t *jets, sky_fn_t sky)
+{
+    if (!n) {
+        nock_crash("ska: eval_nomm null node");
+        return NOUN_ZERO;  /* unreachable */
+    }
+
+    switch (n->tag) {
+
+    case NOMM_0:
+        return slot(n->n0.ax, sub);
+
+    case NOMM_1:
+        return n->n1.val;
+
+    case NOMM_3: {
+        noun r = eval_nomm(n->n_unary.p, sub, jets, sky);
+        return noun_is_cell(r) ? NOUN_YES : NOUN_NO;
+    }
+
+    case NOMM_4: {
+        noun r = eval_nomm(n->n_unary.p, sub, jets, sky);
+        if (!noun_is_atom(r)) nock_crash("op4: increment of cell");
+        return bn_inc(r);
+    }
+
+    case NOMM_5: {
+        noun l = eval_nomm(n->n5.p, sub, jets, sky);
+        noun r = eval_nomm(n->n5.q, sub, jets, sky);
+        return noun_eq(l, r) ? NOUN_YES : NOUN_NO;
+    }
+
+    case NOMM_6: {
+        noun cond = eval_nomm(n->n6.c, sub, jets, sky);
+        if (noun_eq(cond, NOUN_YES))
+            return eval_nomm(n->n6.y, sub, jets, sky);
+        if (noun_eq(cond, NOUN_NO))
+            return eval_nomm(n->n6.n, sub, jets, sky);
+        nock_crash("op6: condition not 0 or 1");
+        return NOUN_ZERO;
+    }
+
+    case NOMM_7: {
+        noun mid = eval_nomm(n->n7.p, sub, jets, sky);
+        return eval_nomm(n->n7.q, mid, jets, sky);
+    }
+
+    case NOMM_8: {
+        noun val    = eval_nomm(n->n8.p, sub, jets, sky);
+        noun new_sub = alloc_cell(val, sub);
+        return eval_nomm(n->n8.q, new_sub, jets, sky);
+    }
+
+    case NOMM_9: {
+        /* core = eval core_fol; then dispatch jets or eval arm */
+        noun core = eval_nomm(n->n9.core_fol, sub, jets, sky);
+        return nock_op9_continue(core, n->n9.ax, jets, sky);
+    }
+
+    case NOMM_10: {
+        /* hax tree edit: #[ax val target] */
+        noun val    = eval_nomm(n->n10.val_fol, sub, jets, sky);
+        noun target = eval_nomm(n->n10.tgt_fol, sub, jets, sky);
+        if (!noun_is_direct(n->n10.ax))
+            nock_crash("op10: edit axis not direct");
+        uint64_t ax = direct_val(n->n10.ax);
+        if (ax == 0) nock_crash("op10: edit axis 0");
+        return ska_hax(ax, val, target);
+    }
+
+    case NOMM_11: {
+        if (n->n11.is_dyn) {
+            noun clue = eval_nomm(n->n11.clue, sub, jets, sky);
+            if (noun_is_direct(n->n11.tag) &&
+                direct_val(n->n11.tag) == 0x646C6977ULL /* %wild */) {
+                /* Parse the %wild clue and scope the new wilt into main. */
+                wilt_t wild_buf;
+                ska_parse_wilt(clue, &wild_buf);
+                return eval_nomm(n->n11.main, sub, &wild_buf, sky);
+            }
+            (void)clue;
+        }
+        return eval_nomm(n->n11.main, sub, jets, sky);
+    }
+
+    case NOMM_12:
+        /* Scry — fall back to nock_ex which will crash or dispatch sky */
+        /* We can't reconstruct the formula noun here; crash informatively. */
+        nock_crash("ska: op12 scry requires sky handler via fallback");
+        return NOUN_ZERO;
+
+    case NOMM_DIST: {
+        noun head = eval_nomm(n->ndist.p, sub, jets, sky);
+        noun tail = eval_nomm(n->ndist.q, sub, jets, sky);
+        return alloc_cell(head, tail);
+    }
+
+    case NOMM_I2: {
+        noun new_sub = eval_nomm(n->i2.p, sub, jets, sky);
+        noun new_fol = eval_nomm(n->i2.q, sub, jets, sky);
+        return fallback(new_sub, new_fol, jets, sky);
+    }
+
+    case NOMM_DS2:
+    case NOMM_DUS2:
+        /* DS2/DUS2 only appear after the cook pass (Stage 7f). */
+        nock_crash("ska: ds2/dus2 in uncocked nomm");
+        return NOUN_ZERO;
+
+    case NOMM_2:
+        /* NOMM_2 only appears in nomm1_t after cook pass. */
+        nock_crash("ska: nomm_2 in uncocked nomm");
+        return NOUN_ZERO;
+
+    default:
+        nock_crash("ska: unknown nomm tag");
+        return NOUN_ZERO;
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Stage 7c — Public entry points
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/*
+ * ska_nock: analyze formula, then evaluate the resulting nomm_t AST.
+ * Resets the arena on each call to avoid leaking nomm_t allocations.
+ */
+noun ska_nock(noun subject, noun formula,
+              const wilt_t *jets, sky_fn_t sky)
+{
+    ska_arena_reset();
+
+    /* Start with a fully wildcard subject sock (no static knowledge). */
+    sock_t sub_sock = (sock_t){ .cape = cape_wild(), .data = subject };
+
+    nomm_t *nomm = scan(sub_sock, formula);
+    if (!nomm) {
+        /* scan failed — fall back to nock_ex */
+        return fallback(subject, formula, jets, sky);
+    }
+
+    return eval_nomm(nomm, subject, jets, sky);
+}
+
+/* Stubs for cook-pass API (Stage 7f). */
+boil_t *ska_analyze(noun subject, noun formula,
+                    const wilt_t *jets, sky_fn_t sky)
+{
+    (void)subject; (void)formula; (void)jets; (void)sky;
+    return NULL;
+}
+
+noun run_nomm1(const nomm1_t *n, noun subject,
+               const wilt_t *jets, sky_fn_t sky)
+{
+    (void)n; (void)subject; (void)jets; (void)sky;
+    nock_crash("run_nomm1: cook pass not yet implemented (Stage 7f)");
+    return NOUN_ZERO;
 }

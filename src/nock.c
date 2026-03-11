@@ -580,3 +580,21 @@ noun nock(noun subject, noun formula) {
 noun nock_ex(noun subject, noun formula, const wilt_t *jets, sky_fn_t sky) {
     return nock_eval(subject, formula, jets, sky);
 }
+
+noun nock_op9_continue(noun core, noun ax,
+                       const wilt_t *jets, sky_fn_t sky) {
+    /* jet check — same logic as op 9 in nock_eval */
+    if (jets != NULL) {
+        for (int i = 0; i < jets->len; i++) {
+            if (sock_match(jets->e[i].sock.cape,
+                           jets->e[i].sock.data, core)) {
+                jet_fn_t fn = hot_lookup(jets->e[i].label);
+                if (fn != NULL)
+                    return fn(core, jets, sky);
+            }
+        }
+    }
+    /* no jet — evaluate arm as Nock formula */
+    noun arm = slot(ax, core);
+    return nock_eval(core, arm, jets, sky);
+}

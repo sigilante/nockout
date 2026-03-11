@@ -493,6 +493,64 @@ T "DO-FX empty list"           "0000000000000001" \
 T "DO-FX %out effect"          "0000000000000001" \
     "7632239 >NOUN  0 >NOUN CONS  0 >NOUN CONS  DO-FX  1 ."
 
+# ── Phase 7 — SKA: SKNOCK gives same answers as NOCK ─────────────────────
+# SKNOCK runs the scan pass and eval_nomm; ops 9/I2 fall back to nock_ex.
+# Linear ops are handled natively; jet dispatch fires via %wild scope.
+
+# op 0 (slot)
+T "ska op0: slot axis 1"       "000000000000002A" \
+    "42 N>N  0 N>N 1 N>N CONS  SKNOCK NOUN> ."
+T "ska op0: slot head"         "0000000000000001" \
+    "1 2 C>N  0 N>N 2 N>N CONS  SKNOCK NOUN> ."
+
+# op 1 (quote)
+T "ska op1: quote 42"          "000000000000002A" \
+    "0 N>N  1 N>N 42 N>N CONS  SKNOCK NOUN> ."
+
+# op 4 (inc) and op 0
+T "ska op4: inc 5 = 6"         "0000000000000006" \
+    "5 N>N  4 N>N 0 N>N 1 N>N CONS CONS  SKNOCK NOUN> ."
+
+# op 5 (eq) — same axis twice → YES (0)
+T "ska op5: eq self = YES"     "0000000000000000" \
+    "42 N>N  5 N>N 0 N>N 1 N>N CONS  0 N>N 1 N>N CONS  CONS CONS  SKNOCK NOUN> ."
+
+# op 6 (if) — YES → then branch
+T "ska op6: YES->42"           "000000000000002A" \
+    "0 N>N  6 N>N  1 N>N 0 N>N CONS  1 N>N 42 N>N CONS  1 N>N 99 N>N CONS  CONS CONS CONS  SKNOCK NOUN> ."
+T "ska op6: NO->99"            "0000000000000063" \
+    "0 N>N  6 N>N  1 N>N 1 N>N CONS  1 N>N 42 N>N CONS  1 N>N 99 N>N CONS  CONS CONS CONS  SKNOCK NOUN> ."
+
+# op 7 (compose) — double lus: *[5 [7 [4 [0 1]] [4 [0 1]]]] = 7
+T "ska op7: double lus"        "0000000000000007" \
+    "5 N>N  7 N>N  4 N>N 0 N>N 1 N>N CONS CONS  4 N>N 0 N>N 1 N>N CONS CONS  CONS  CONS  SKNOCK NOUN> ."
+
+# op 8 (push) — pin 99 then slot head
+T "ska op8: pin slot head"     "0000000000000063" \
+    "42 N>N  8 N>N  1 N>N 99 N>N CONS  0 N>N 2 N>N CONS  CONS CONS  SKNOCK NOUN> ."
+
+# op 9 (arm invoke, fallback via nock_ex) — same as existing op9 test
+T "ska op9: arm at axis 2"     "000000000000002B" \
+    "0 N>N  9 N>N  2 N>N  1 N>N  4 N>N 0 N>N 3 N>N CONS CONS  42 N>N CONS  CONS  CONS  CONS  SKNOCK NOUN> ."
+
+# op 10 (hax tree edit) — same as existing op10 test
+T "ska op10: edit axis 2 head" "0000000000000063" \
+    "1 2 C>N  10 N>N  2 N>N 1 N>N 99 N>N CONS CONS  0 N>N 1 N>N CONS  CONS  CONS  SKNOCK CAR NOUN> ."
+
+# op 11 static hint (pass-through)
+T "ska op11: static hint"      "000000000000002A" \
+    "42 N>N  11 N>N 7 N>N 0 N>N 1 N>N CONS CONS CONS  SKNOCK NOUN> ."
+
+# jet dispatch via SKNOCK — %wild hint scoped, fallback in NOMM_9 fires jet
+T "ska jet dec: dec(5)=4"      "0000000000000004" \
+    "0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  SKNOCK  NOUN> ."
+T "ska jet add: add(3,4)=7"    "0000000000000007" \
+    "0 N>N  6579297 N>N  3 N>N  4 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
+T "ska jet div: div(10,3)=3"   "0000000000000003" \
+    "0 N>N  7760228 N>N  10 N>N  3 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
+T "ska jet mod: mod(10,3)=1"   "0000000000000001" \
+    "0 N>N  6582125 N>N  10 N>N  3 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
+
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"
 for line in "${TLINES[@]}"; do
