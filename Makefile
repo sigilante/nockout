@@ -13,7 +13,7 @@ CFLAGS  = -Wall -O2 -ffreestanding -nostdlib -nostartfiles \
           -mcpu=cortex-a72 -mgeneral-regs-only \
           -fno-pic -fno-stack-protector \
           -I$(SRCDIR)
-LDFLAGS = -T $(SRCDIR)/linker.ld -nostdlib
+LDFLAGS = -T $(SRCDIR)/linker.ld -nostdlib -no-pie
 
 OBJS    = boot.o uart.o noun.o bignum.o blake3.o nock.o setjmp.o jam.o kernel.o forth.o main.o
 

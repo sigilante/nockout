@@ -501,7 +501,7 @@ done
 
 RAW=$({ printf '%s\n' "$INPUT"; sleep 2; printf '\001x'; } | \
     timeout 30 qemu-system-aarch64 -machine raspi4b -kernel kernel8.img \
-        -display none -nographic 2>/dev/null || true)
+        -display none -nographic || true)
 
 # Extract results from output lines.
 # Each test produces one output token followed by whitespace and "ok".

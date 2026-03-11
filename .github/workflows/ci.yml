@@ -32,6 +32,15 @@ jobs:
           make CROSS=aarch64-linux-gnu-
           ls -lh kernel8.elf kernel8.img
 
+      - name: QEMU diagnostics
+        run: |
+          echo "=== QEMU machines ==="
+          qemu-system-aarch64 -machine help 2>&1 | grep -i raspi
+          echo "=== Boot test (raspi4b, 5s, stderr visible) ==="
+          echo "" | timeout 5 qemu-system-aarch64 \
+            -machine raspi4b -kernel kernel8.img \
+            -display none -nographic 2>&1 || true
+
       - name: jam.py self-tests
         run: python3 tools/jam.py test
 

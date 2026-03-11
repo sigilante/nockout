@@ -59,7 +59,7 @@ IMG="-kernel kernel8.img"
 boot_nopill() {
     # Boot without any pill — should fall back to REPL (QUIT)
     { sleep 1; printf '\001x'; } | \
-        timeout 5 $QEMU $IMG 2>/dev/null || true
+        timeout 5 $QEMU $IMG || true
 }
 
 boot_pill() {
@@ -67,7 +67,7 @@ boot_pill() {
     { sleep 2; printf '\001x'; } | \
         timeout 6 $QEMU $IMG \
           -device "loader,addr=0x10000000,force-raw=on,file=$pill" \
-          2>/dev/null || true
+          || true
 }
 
 # Send event = atom 42.
@@ -76,12 +76,12 @@ boot_pill() {
 boot_pill_event42() {
     local pill="$1"
     { sleep 2
-      python3 -c "import sys; sys.stdout.buffer.write(bytes([2,0,0,0,0,0,0,0,0x50,0x15]))" 2>/dev/null
+      python3 -c "import sys; sys.stdout.buffer.write(bytes([2,0,0,0,0,0,0,0,0x50,0x15]))"
       sleep 1
       printf '\001x'
     } | timeout 8 $QEMU $IMG \
           -device "loader,addr=0x10000000,force-raw=on,file=$pill" \
-          2>/dev/null || true
+          || true
 }
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
