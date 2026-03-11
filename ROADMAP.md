@@ -281,7 +281,7 @@ Arvo and Shrine shapes. CI: 158 REPL tests + 5 kernel boot integration tests all
 
 ### Phase 7 — SKA (Subject Knowledge Analysis)
 
-**STATUS: IN PROGRESS** — Stages 7a–7e complete (177 tests passing). Stage 7f (cook pass) in progress.
+**STATUS: IN PROGRESS** — Stages 7a–7f complete (177 tests passing). Stage 7g (integration) next.
 
 Reference implementation: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon).
 Paper: Afonin ~dozreg-toplud, UTJ vol. 3 issue 1.
@@ -412,7 +412,7 @@ initial sock. After SKA, op-9 dispatch skips `sock_match` entirely at
 | **7c** Scan (linear)   | `src/ska.c`  | ✅ All opcodes; `%9` → `NOMM_DS2` or `NOMM_9` fallback; `SKNOCK` Forth word |
 | **7d** Memo cache      | `src/ska.c`  | ✅ Cross-arm cache keyed by `(formula, sub-sock)`; per-pass reset |
 | **7e** Loop detection  | `src/ska.c`  | ✅ `close()` heuristic, fols_stack, frond validation, redo-loop |
-| **7f** Cook pass       | `src/ska.c`  | 🔄 `nomm → nomm-1`; wire `%ds2` sites to `hot_state[]` |
+| **7f** Cook pass       | `src/ska.c`  | ✅ `nomm → nomm-1`; `cook_nomm()`, `run_nomm1()`; static jet pre-wiring at DS2 sites |
 | **7g** Integration     | `src/nock.c`, `src/forth.s` | `ska_analyze()`, SKA cache in `nock_eval`, `SKA`/`.SKA` Forth words |
 | **7h** Tests           | `tests/run_tests.sh` | Inlining, looping gate, jet fire, `%i2` fallback |
 
