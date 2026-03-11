@@ -2,12 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: ["**"]
   pull_request:
-    branches: [master]
+    branches: ["**"]
 
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,31 +19,24 @@ jobs:
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
             binutils-aarch64-linux-gnu \
-            qemu-system-arm
+            qemu-system-arm \
+            python3
 
       - name: Toolchain versions
         run: |
           aarch64-linux-gnu-gcc --version
-          aarch64-linux-gnu-ld --version
           qemu-system-aarch64 --version
 
-      - name: Build
+      - name: Build kernel
         run: |
-          make \
-            CC=aarch64-linux-gnu-gcc \
-            LD=aarch64-linux-gnu-ld \
-            OBJCOPY=aarch64-linux-gnu-objcopy \
-            GDB=aarch64-linux-gnu-gdb
+          make CROSS=aarch64-linux-gnu-
           ls -lh kernel8.elf kernel8.img
 
-      - name: Smoke test QEMU
-        run: |
-          echo "Checking raspi3b machine support:"
-          qemu-system-aarch64 -machine help 2>&1 | grep -i raspi || true
-          echo "Boot output (5s timeout):"
-          echo "" | timeout 5 qemu-system-aarch64 \
-            -machine raspi3b -kernel kernel8.img \
-            -display none -nographic 2>&1 || true
+      - name: jam.py self-tests
+        run: python3 tools/jam.py test
 
-      - name: Test
-        run: ./tests/run_tests.sh --verbose
+      - name: Forth/Nock unit tests (158 tests)
+        run: bash tests/run_tests.sh
+
+      - name: Kernel boot integration tests (5 kernels)
+        run: bash tests/kernel-boot.sh --verbose

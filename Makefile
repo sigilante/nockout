@@ -1,10 +1,11 @@
 TARGET  = kernel8
 SRCDIR  = src
 
-CC      = aarch64-elf-gcc
-LD      = aarch64-elf-ld
-OBJCOPY = aarch64-elf-objcopy
-GDB     = aarch64-elf-gdb
+CROSS   ?= aarch64-elf-
+CC       = $(CROSS)gcc
+LD       = $(CROSS)ld
+OBJCOPY  = $(CROSS)objcopy
+GDB      = $(CROSS)gdb
 
 VPATH   = $(SRCDIR)
 
