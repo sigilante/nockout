@@ -228,21 +228,37 @@ causing it to loop back into QUIT.
 - `noun_print(noun, depth)`: recursive noun tree printer; depth-limited at 12; direct atoms as hex.
 - `sock_match(cape, data, subject)`: structural pattern match per `$cape`/`$sock` spec.
 - `parse_wilt(noun, wilt_t*)`: parses Hoon list of `[label [cape data]]` pairs.
-- Hot state: `hot_state[]` array with sentinel; `hot_lookup(label)` → `jet_fn_t`. Empty until Phase 11d.
+- Hot state: `hot_state[]` populated with 10 jets: dec/add/sub/mul/lth/gth/lte/gte/div/mod.
 - Op 9 now checks `jets` before TCO: scans wilt for matching sock, calls jet if found.
-- UART backspace fix: BS/DEL now sends `\b \b` erase sequence; echo moved after character classification
-  in both `REFILL` and the inline QUIT input loop.
-- Regression test suite: `tests/run_tests.sh` — 59 tests, all passing (ops 0–11 + SLOT + distribution rule).
-- Note: Forth hex literals (`0x...`) are not supported by the REPL (BASE=10). Use decimal cord values in tests.
+- UART backspace fix: BS/DEL now sends `\b \b` erase sequence.
+- Regression test suite: `tests/run_tests.sh` — 158 tests, all passing.
+
+**Phases 4b/4c/4d/4e/5a/5b/5c/5d/5e: COMPLETE**
+- BLAKE3 (`src/blake3.c`): hash_atom(), 7 official test vectors pass.
+- Bignum (`src/bignum.c`): add/sub/mul/div/mod/cmp/lsh/rsh/or/and/xor/bex/met, decimal print.
+- Noun tag redesign: direct atom = raw integer (bit 63 = 0), indirect = tag 10, cell = tag 11.
+- Jam/cue (`src/jam.c`): `noun jam(noun)` / `noun cue(noun)` + Forth words `JAM` `CUE`.
+- PILL loader: `PILL` Forth word loads jammed atom from 0x10000000 (QEMU `-device loader`).
+- Hot jets in `hot_state[]`: dec/add/sub/mul/lth/gth/lte/gte/div/mod, keyed by label cord.
+
+**Phase 6: COMPLETE (kernel loop)**
+- `src/kernel.c`: `arvo_loop`, `shrine_loop`, UART framing, effect dispatch.
+- PILL v2 format: 8-byte length + 1-byte shape + 7-byte pad + jam data.
+- Forth words: `KSHAPE`, `RECV-NOUN`, `SEND-NOUN`, `DISPATCH-FX`, `ARVO-LOOP`, `SHRINE-LOOP`, `KERNEL`.
+- No pill → falls back to REPL (QUIT). REPL remains debug escape hatch.
+- CI: `.github/workflows/ci.yml` — builds QEMU 9.2.0 from source (raspi4b support),
+  runs 158 REPL tests + 5 kernel boot integration tests (null/hint × arvo/shrine + no-pill).
+- `tools/jam.py`: stdlib-only Python jam/cue; `tools/mkpill.py -n <atom>` for decimal atoms.
 
 ## Immediate Tasks for This Agent
 
-- Phase 11c: populate `hot_state[]` with first real jets (`dec`, `add` as C functions).
-- Phase 11d: Forth words `.JETS` (print dashboard), `.WILT` (print active registrations), jet hit counters.
-- Phase 3c: DONE. `src/setjmp.h` + `src/setjmp.s`: bare-metal AArch64 setjmp/longjmp (saves
-  x19–x28, x29/x30, sp; no FP regs). `jmp_buf nock_abort` established in QUIT `.Lquit_restart`
-  after stack reset. `nock_crash()` longjmps there; QUIT reprints prompt and loops cleanly.
-- Phase 4: bignum atoms.
+- **Phase 7**: Implement SKA in C (`src/ska.c` / `src/ska.h`).
+  Reference: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon implementation).
+  Key types to port: `cape_t`, `sock_t`, `bell_t`, `nomm_t`, `glob_t`, `long_t` (analysis state).
+  Algorithm: `scan` pass (symbolic eval) → Tarjan SCC (loop detection) → `cook` pass (jet wiring).
+  See ROADMAP.md Phase 7 for full data structure sketches and algorithm overview.
+
+- **Phase 8**: Move Nock dispatch into Forth dictionary (after Phase 7 is proven).
 
 ## Future: Nock Evaluator in Forth (Phase 5+)
 
@@ -323,13 +339,15 @@ Phase 2c  src/forth.s     — CONS, CAR, CDR, ATOM?, CELL?, =noun Forth words
 Phase 2d  smoke test       — 1 2 CONS CDR . → 2 etc.
 ```
 
-## Subject Knowledge Analysis (Phase 5 Design)
+## Subject Knowledge Analysis (Phase 7)
 
-Reference: Afonin ~dozreg-toplud, "Subject Knowledge Analysis", UTJ Vol. 3 Issue 1.
+Reference implementation: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon).
+Paper: Afonin ~dozreg-toplud, "Subject Knowledge Analysis", UTJ Vol. 3 Issue 1.
 
 SKA is a static analysis pass that takes a `(subject, formula)` pair and produces:
-1. A **call graph** — every Nock 2/9 site annotated as *direct* (formula statically known) or *indirect*
-2. A **subject mask** (`$cape`) — which axes of the subject are used *as code*
+1. A **`$nomm` annotated AST** — every Nock 2/9 site tagged as indirect (`%i2`), direct-safe
+   (`%ds2`), or direct-unsafe (`%dus2`), each with a `glob` call-site ID.
+2. A **`$cape` subject mask** — which axes of the subject are used *as code*.
 
 **How it works**: Run a partial Nock interpreter symbolically. Subject is `$sock = (cape, data)` where
 unknown parts are stubbed with 0. Propagate known information through the formula tree. At each
@@ -476,12 +494,16 @@ Nock that emits `%fast` hints, we silently ignore them (correct: `%fast` is pure
 | 3 | Nock 4K eval loop (opcodes 0–10, TCO, `hax`) | DONE |
 | 3b | Op 11 + hint dispatch (`%wild`, `%slog`, `%xray`) + jet infrastructure | DONE |
 | 3c | longjmp crash recovery (back to QUIT instead of halt) | DONE |
-| 4 | Bignum atoms | TODO |
-| 4b | BLAKE3 implementation + hash_atom() + intern() | TODO |
-| 5 | SKA: symbolic partial eval, annotated Nock, compile-time jet matching | TODO |
-| 6 | jam/cue + SD card load + atom cold store | TODO |
-| 7 | Kernel loop: +poke event dispatch, effects vocabulary | TODO |
-| N | North integration (parallel track) | ONGOING |
+| 4b | BLAKE3 implementation + `hash_atom()` | DONE |
+| 4c/d/e | Bignum: add/sub/mul/div/mod/cmp/bit-ops, decimal print | DONE |
+| 5a | jam/cue (noun serialization) | DONE |
+| 5b | Hot jets: dec/add/sub/mul/lth/gth/lte/gte/div/mod | DONE |
+| 5c | PILL loader (QEMU file loader at 0x10000000) | DONE |
+| 5d | Noun tag redesign (direct atom = raw integer) | DONE |
+| 6 | Kernel loop: Arvo + Shrine shapes, UART framing, effect dispatch | DONE |
+| CI | QEMU raspi4b + 158 REPL tests + 5 kernel boot tests | DONE |
+| 7 | SKA: symbolic partial eval, `$nomm` AST, compile-time jet matching | TODO |
+| 8 | Forth as jet dashboard: evaluator dispatch in dictionary | TODO |
 
 PoC gate: Phases 0-5. Everything after is "turning it into an OS."
 

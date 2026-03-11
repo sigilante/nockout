@@ -202,10 +202,6 @@ NOCK               \ evaluate
 
 `PILL` returns atom `0` if no pill was loaded (QEMU zeroes RAM at startup).
 
----
-
-## Remaining Phases
-
 ### Phase 6 — Kernel Loop
 
 Replace the Forth REPL as the top-level driver with a Nock event loop.
@@ -276,29 +272,71 @@ Effects are a Nock list `[[tag data] rest]` terminated by `0`.
 
 **Prerequisites**: all complete — bignum ✓, JAM/CUE ✓, PILL loader ✓, jets ✓.
 
+**STATUS: COMPLETE** — Kernel loop boots from PILL, dispatches effects, supports both
+Arvo and Shrine shapes. CI: 158 REPL tests + 5 kernel boot integration tests all passing.
+
+---
+
+## Remaining Phases
+
 ### Phase 7 — SKA (Subject Knowledge Analysis)
-Implement the partial Nock interpreter described in Afonin ~dozreg-toplud, UTJ v3i1.
 
-SKA runs symbolically on `(subject, formula)` where the subject is represented as
-`$sock = (cape: mask, data: partial_noun)` with unknown axes stubbed out.
+Reference implementation: [`dozreg-toplud/ska`](https://github.com/dozreg-toplud/ska) (Hoon).
+Paper: Afonin ~dozreg-toplud, UTJ vol. 3 issue 1.
 
-Outputs:
-1. Annotated call graph: each Nock 2/9 site tagged direct (statically-known callee) or indirect.
-2. `$cape` subject mask: which axes are used as code (needed for correct cache keying).
+SKA is a one-pass symbolic partial evaluator over Nock formulas. It takes a
+`(subject: sock, formula: *)` pair and produces an **annotated Nock AST** (`$nomm`) in
+which every Nock 2/9 call site is classified:
 
-Key implementation notes:
-- **Direct calls**: annotate Nock 2 sites with a pointer to the callee's compiled form; skip
-  `nock_eval` entirely (~1.7× speedup per paper).
-- **Compile-time jet matching**: walk call graph once, match battery hashes against jet table;
-  record pointer in call annotation. Eliminates per-call hash lookup.
-- **Subject mask as cache key**: cache on `(masked_subject, formula)`, not
-  `(full_subject, formula)`. Without the mask, subjects with changing counters cause cache
-  misses on every call.
-- **Tarjan SCC for loops**: naive partial evaluation loops forever on `dec` (and any
-  tail-recursive gate). Detect back-edges; defer fixpoint until SCC entry is finalized.
-- **Nomm representation**: SKA output is annotated Nock where Nock 2 carries an `info` field
-  (`~`=indirect, `[sock fol]`=direct). Our equivalent is a compiled Forth word that uses
-  direct `bl` for known call sites.
+| SKA tag | Meaning |
+|---------|---------|
+| `%i2`   | Indirect call — callee not statically known |
+| `%ds2`  | Direct, safe — formula is fully known; callee's `$nomm` can be inlined |
+| `%dus2` | Direct, unsafe — callee known but formula might vary; use call site |
+
+The annotated AST drives **compile-time jet matching** (no per-call hash lookup) and
+**correct cache keying** via the `$cape` subject mask.
+
+#### Key data structures (port from `noir.hoon`)
+
+```c
+// $cape: boolean tree mask (true = axis is known, false = wildcard)
+typedef struct cape { bool is_atom; union { bool known; struct { cape_t *h, *t; }; }; } cape_t;
+
+// $sock: partial subject knowledge
+typedef struct { cape_t *cape; noun data; } sock_t;
+
+// $bell: a call site identified by (subject knowledge, formula)
+typedef struct { sock_t bus; noun fol; } bell_t;
+
+// $nomm: annotated Nock AST  (see noir.hoon for full union)
+typedef enum { NOMM_CONST, NOMM_I2, NOMM_DS2, NOMM_DUS2, NOMM_3, NOMM_4, ... } nomm_tag_t;
+typedef struct nomm nomm_t;
+struct nomm { nomm_tag_t tag; /* ... per-tag fields including glob_t site ... */ };
+```
+
+#### Algorithm (from `skan.hoon`)
+
+1. **`scan` pass**: Symbolically evaluate formula over partial subject.
+   At every Nock 2/9 site, check if the formula operand is statically known.
+   If known → emit `%ds2`/`%dus2` with a `glob` call-site ID; push callee onto work-list.
+   If not known → emit `%i2`.
+2. **Tarjan SCC**: Run after each fixpoint guess to detect back-edges (tail-recursive
+   gates like `dec`). Back-edges mark the loop entry; defer `scan` result until SCC exits.
+3. **`cook` pass**: Walk the annotated AST; match `%ds2`/`%dus2` sites against
+   `hot_state[]` by label. Record `jet_fn_t` pointer in the glob table.
+4. **`$long` global state**: Holds memo table, arm index, jet cold-state, and
+   per-arm `$nomm` entries. Lives on the C heap; scoped to one analysis run.
+
+#### Integration with `%wild`
+
+`%wild` already supplies `$wilt = [(list [label sock])]` at runtime. SKA consumes
+this as the initial sock for the kernel gate. The two mechanisms are complementary:
+- `%wild` → runtime subject knowledge (what batteries are present)
+- SKA → compile-time call graph analysis (which calls are direct)
+
+After SKA, `op9` dispatch in `nock_eval` can branch directly to a cached `nomm_t*`
+instead of calling `nock()` recursively.
 
 ### Phase 8 — Forth as Jet Dashboard
 Move Nock evaluator dispatch into the Forth dictionary.
