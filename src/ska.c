@@ -52,6 +52,104 @@ void ska_arena_reset(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * Stage 7e — Loop detection state
+ *
+ * Global mutable state for the current scan pass.  Reset at the start of
+ * each ska_nock() call (and on each redo-loop iteration).
+ *
+ * fols_stack  : current chain of open Nock-2 / Nock-9 analysis frames.
+ *               Pushed before recursing into an arm body; popped on return.
+ *               Loop heuristic fires when the same formula appears twice.
+ * g_site_gen  : monotone evalsite counter.
+ * g_block[]   : (par_site, kid_site) pairs known NOT to be loops.
+ *               Persists across redo iterations; grows monotonically.
+ * g_fronds[]  : loop assumptions recorded during this scan pass.
+ *               Validated when exiting a cycle; failures add to g_block.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#define SKA_MAX_FOLS   64
+#define SKA_MAX_BLOCK  64
+#define SKA_MAX_FRONDS 64
+#define SKA_MAX_RETRIES 8
+
+typedef struct {
+    noun     fol;      /* arm formula being analysed  */
+    sock_t   sub;      /* subject sock at this frame  */
+    uint32_t site_id;  /* evalsite id for this frame  */
+} ska_fols_entry_t;
+
+typedef struct {
+    uint32_t par_site;
+    uint32_t kid_site;
+    sock_t   par_sub;
+    sock_t   kid_sub;
+} ska_frond_t;
+
+static ska_fols_entry_t g_fols[SKA_MAX_FOLS];
+static int              g_fols_top;
+static uint32_t         g_site_gen;
+
+static struct { uint32_t par; uint32_t kid; } g_block[SKA_MAX_BLOCK];
+static int g_block_len;
+
+static ska_frond_t g_fronds[SKA_MAX_FRONDS];
+static int         g_frond_len;
+
+/* ── Stage 7d: memo cache ────────────────────────────────────────────────────
+ * Maps (formula, subject-sock) → pre-scanned nomm body + product sock.
+ * Prevents re-scanning the same arm when called from multiple sites.
+ * Keyed by exact formula noun and `sock_huge(entry.sub, caller_sub)`.
+ * Invalidated on each pass reset (arena pointers become stale).
+ */
+#define SKA_MAX_MEMO 64
+
+typedef struct {
+    noun    fol;
+    sock_t  sub;    /* subject sock at time of scan (more general = broader hit) */
+    nomm_t *body;   /* pre-scanned arm body                                      */
+    sock_t  prod;   /* product sock from scan                                    */
+} ska_memo_entry_t;
+
+static ska_memo_entry_t g_memo[SKA_MAX_MEMO];
+static int              g_memo_len;
+
+/* Reset per-pass state (not g_block, which persists across retries). */
+static void ska_pass_reset(void)
+{
+    g_fols_top  = 0;
+    g_site_gen  = 0;
+    g_frond_len = 0;
+    g_memo_len  = 0;
+    ska_arena_reset();
+}
+
+static bool is_blocked(uint32_t par, uint32_t kid)
+{
+    for (int i = 0; i < g_block_len; i++)
+        if (g_block[i].par == par && g_block[i].kid == kid)
+            return true;
+    return false;
+}
+
+static void record_frond(uint32_t par, uint32_t kid,
+                         sock_t par_sub, sock_t kid_sub)
+{
+    if (g_frond_len >= SKA_MAX_FRONDS) return;
+    g_fronds[g_frond_len++] = (ska_frond_t){ par, kid, par_sub, kid_sub };
+}
+
+static void push_fols(noun fol, sock_t sub, uint32_t site_id)
+{
+    if (g_fols_top >= SKA_MAX_FOLS) return;
+    g_fols[g_fols_top++] = (ska_fols_entry_t){ fol, sub, site_id };
+}
+
+static void pop_fols(void)
+{
+    if (g_fols_top > 0) g_fols_top--;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * Stage 7b — Cape operations  (mirrors Hoon ++ca in skan.hoon)
  *
  *   cape_known()          → & (CAPE_KNOWN, atom 0)
@@ -313,7 +411,7 @@ sock_t sock_darn(sock_t s, noun ax, sock_t edit)
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
- * Stage 7c — Scan pass (linear opcodes; op 2 / op 9 fall back to NOMM_I2)
+ * Stage 7c/7e — Scan pass
  *
  * scan(sub, fol) → nomm_t*
  *   sub : current subject sock (what we know about the subject at this point)
@@ -321,7 +419,12 @@ sock_t sock_darn(sock_t s, noun ax, sock_t edit)
  *   Returns annotated nomm_t*.  Each node carries a `prod` sock recording
  *   what the evaluator knows about the result of this sub-formula.
  *
- * Reference: skan.hoon ++scan / ++scan-1 arms.
+ * Stage 7e adds loop detection via the fols_stack: when analysing a Nock-9
+ * arm invocation whose formula is statically known, we search ancestor frames
+ * for the same formula.  If found and the parent subject subsumes the child,
+ * we emit a NOMM_DS2 backedge (body=NULL) instead of recursing.
+ *
+ * Reference: skan.hoon ++scan / ++scan-1 / ++close arms.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 /* Helper: allocate and zero-init a nomm_t node from the arena. */
@@ -514,7 +617,13 @@ static nomm_t *scan_cell(sock_t sub, noun head, noun tail)
 
     /* ── 9: invoke *[*[a c] 2 [0 1] 0 b]
      * Core = eval c; arm = slot(b, core); eval core as its own subject.
-     * At Stage 7c: arm could recurse, so emit NOMM_9 and fall back in eval.
+     *
+     * Stage 7e: if the arm formula is statically known (core_sock has KNOWN
+     * cape at axis b), run the ++close loop heuristic:
+     *  - Search g_fols_stack for the same formula.
+     *  - If found and par_sub ⊇ kid_sub: emit NOMM_DS2 backedge.
+     *  - If not: push fols entry, scan arm body, pop, emit NOMM_DS2.
+     * Otherwise (arm formula not known): emit NOMM_9 (fallback).
      * ── */
     case 9: {
         if (!noun_is_cell(tail)) {
@@ -522,13 +631,113 @@ static nomm_t *scan_cell(sock_t sub, noun head, noun tail)
             return NULL;
         }
         cell_t *args = (cell_t *)(uintptr_t)cell_ptr(tail);
-        noun b          = args->head;     /* axis to pull arm from core */
+        noun b = args->head;   /* arm axis */
+
+        if (!noun_is_direct(b)) {
+            /* Non-direct axis: conservative fallback */
+            nomm_t *core_fol = scan(sub, args->tail);
+            if (!core_fol) return NULL;
+            n->tag         = NOMM_9;
+            n->n9.ax       = b;
+            n->n9.core_fol = core_fol;
+            n->prod        = sock_dunno(sub);
+            return n;
+        }
+        uint64_t ax = direct_val(b);
+
         nomm_t *core_fol = scan(sub, args->tail);
         if (!core_fol) return NULL;
-        n->tag            = NOMM_9;
-        n->n9.ax          = b;
-        n->n9.core_fol    = core_fol;
-        n->prod           = sock_dunno(sub);
+        sock_t core_sock = core_fol->prod;
+
+        /* Try to statically determine the arm formula. */
+        sock_t arm_sock = sock_pull(core_sock, b);
+        if (!cape_is_known(arm_sock.cape)) {
+            /* Arm formula not known statically — conservative fallback. */
+            n->tag         = NOMM_9;
+            n->n9.ax       = b;
+            n->n9.core_fol = core_fol;
+            n->prod        = sock_dunno(sub);
+            return n;
+        }
+
+        noun arm_fol = arm_sock.data;
+
+        /* ++ close heuristic: search fols_stack for same formula. */
+        for (int i = g_fols_top - 1; i >= 0; i--) {
+            if (!noun_eq(g_fols[i].fol, arm_fol)) continue;
+            uint32_t par_site = g_fols[i].site_id;
+            if (is_blocked(par_site, g_site_gen)) continue;
+
+            /* Check subsumption: parent subject ⊇ child subject. */
+            if (!sock_huge(g_fols[i].sub, core_sock)) continue;
+
+            /* Loop detected — emit backedge DS2. */
+            uint32_t kid_site = g_site_gen++;
+            record_frond(par_site, kid_site, g_fols[i].sub, core_sock);
+
+            n->tag              = NOMM_DS2;
+            n->ds2.p            = core_fol;
+            n->ds2.body         = NULL;   /* backedge */
+            n->ds2.fol          = arm_fol;
+            n->ds2.ax           = ax;
+            n->ds2.is_backedge  = true;
+            n->ds2.site_id      = kid_site;
+            n->prod             = sock_dunno(sub);
+            return n;
+        }
+
+        /* No loop: check memo cache before doing a full scan. */
+        for (int m = 0; m < g_memo_len; m++) {
+            if (!noun_eq(g_memo[m].fol, arm_fol)) continue;
+            /* Cache hit if the stored entry was for a more-general subject. */
+            if (!sock_huge(g_memo[m].sub, core_sock)) continue;
+
+            uint32_t this_site  = g_site_gen++;
+            n->tag              = NOMM_DS2;
+            n->ds2.p            = core_fol;
+            n->ds2.body         = g_memo[m].body;
+            n->ds2.fol          = arm_fol;
+            n->ds2.ax           = ax;
+            n->ds2.is_backedge  = false;
+            n->ds2.site_id      = this_site;
+            n->prod             = g_memo[m].prod;
+            return n;
+        }
+
+        /* Push frame, scan arm body, pop frame. */
+        uint32_t this_site = g_site_gen++;
+        push_fols(arm_fol, core_sock, this_site);
+
+        nomm_t *body = scan(core_sock, arm_fol);
+
+        pop_fols();
+
+        if (!body) {
+            /* Scan of arm body failed — fall back to NOMM_9. */
+            n->tag         = NOMM_9;
+            n->n9.ax       = b;
+            n->n9.core_fol = core_fol;
+            n->prod        = sock_dunno(sub);
+            return n;
+        }
+
+        /* Store result in memo cache for future callers. */
+        if (g_memo_len < SKA_MAX_MEMO) {
+            g_memo[g_memo_len].fol  = arm_fol;
+            g_memo[g_memo_len].sub  = core_sock;
+            g_memo[g_memo_len].body = body;
+            g_memo[g_memo_len].prod = body->prod;
+            g_memo_len++;
+        }
+
+        n->tag             = NOMM_DS2;
+        n->ds2.p           = core_fol;
+        n->ds2.body        = body;
+        n->ds2.fol         = arm_fol;
+        n->ds2.ax          = ax;
+        n->ds2.is_backedge = false;
+        n->ds2.site_id     = this_site;
+        n->prod            = body->prod;
         return n;
     }
 
@@ -811,7 +1020,18 @@ static noun eval_nomm(const nomm_t *n, noun sub,
         return fallback(new_sub, new_fol, jets, sky);
     }
 
-    case NOMM_DS2:
+    case NOMM_DS2: {
+        /*
+         * Direct call.  Core formula already analyzed in ds2.p.
+         * - body != NULL: pre-analyzed arm; eval with core as subject.
+         * - body == NULL (backedge): loop; fall back to nock_op9_continue.
+         */
+        noun core = eval_nomm(n->ds2.p, sub, jets, sky);
+        if (n->ds2.body != NULL)
+            return eval_nomm(n->ds2.body, core, jets, sky);
+        return nock_op9_continue(core, n->ds2.ax, jets, sky);
+    }
+
     case NOMM_DUS2:
         /* DS2/DUS2 only appear after the cook pass (Stage 7f). */
         nock_crash("ska: ds2/dus2 in uncocked nomm");
@@ -834,23 +1054,47 @@ static noun eval_nomm(const nomm_t *n, noun sub,
 
 /*
  * ska_nock: analyze formula, then evaluate the resulting nomm_t AST.
- * Resets the arena on each call to avoid leaking nomm_t allocations.
+ *
+ * Stage 7e: wraps the scan in a redo-loop.  After scan, all fronds
+ * (loop assumptions) are validated.  If any fail, the (par,kid) pair is
+ * added to g_block and the scan is retried with the updated blocklist,
+ * up to SKA_MAX_RETRIES times.
  */
 noun ska_nock(noun subject, noun formula,
               const wilt_t *jets, sky_fn_t sky)
 {
-    ska_arena_reset();
+    /* g_block persists across retries; reset it only at start of a new call. */
+    g_block_len = 0;
 
     /* Start with a fully wildcard subject sock (no static knowledge). */
     sock_t sub_sock = (sock_t){ .cape = cape_wild(), .data = subject };
 
-    nomm_t *nomm = scan(sub_sock, formula);
-    if (!nomm) {
-        /* scan failed — fall back to nock_ex */
-        return fallback(subject, formula, jets, sky);
+    for (int attempt = 0; attempt <= SKA_MAX_RETRIES; attempt++) {
+        ska_pass_reset();
+
+        nomm_t *nomm = scan(sub_sock, formula);
+        if (!nomm)
+            return fallback(subject, formula, jets, sky);
+
+        /* Validate fronds: for each loop assumption, check par_sub ⊇ kid_sub.
+         * If the assumption was too optimistic, add to g_block and redo. */
+        bool redo = false;
+        for (int i = 0; i < g_frond_len; i++) {
+            if (!sock_huge(g_fronds[i].par_sub, g_fronds[i].kid_sub)) {
+                if (g_block_len < SKA_MAX_BLOCK) {
+                    g_block[g_block_len].par = g_fronds[i].par_site;
+                    g_block[g_block_len].kid = g_fronds[i].kid_site;
+                    g_block_len++;
+                }
+                redo = true;
+            }
+        }
+        if (!redo)
+            return eval_nomm(nomm, subject, jets, sky);
     }
 
-    return eval_nomm(nomm, subject, jets, sky);
+    /* Exhausted retries — fall back to plain nock_eval. */
+    return fallback(subject, formula, jets, sky);
 }
 
 /* Stubs for cook-pass API (Stage 7f). */

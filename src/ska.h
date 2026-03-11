@@ -135,8 +135,21 @@ struct nomm_s {
         struct { nomm_t *p; nomm_t *q; } ndist;
         /* NOMM_I2: indirect call — subject and formula both dynamic */
         struct { nomm_t *p; nomm_t *q; } i2;
-        /* NOMM_DS2: direct safe — formula is %0 or %1 literal */
-        struct { nomm_t *p; glob_t glob; } ds2;
+        /*
+         * NOMM_DS2: direct call — arm formula statically known at analysis.
+         *   body != NULL: arm has been scanned; eval body with core as subject.
+         *   body == NULL: loop backedge; fall back to nock_op9_continue.
+         * NOMM_DUS2: direct unsafe — formula computed at runtime but pre-known.
+         */
+        struct {
+            nomm_t  *p;           /* core formula                           */
+            nomm_t  *body;        /* pre-scanned arm body; NULL = backedge  */
+            noun     fol;         /* arm formula noun (cook pass + eval)    */
+            uint64_t ax;          /* arm slot axis (for nock_op9_continue)  */
+            bool     is_backedge; /* true if this is a loop backedge        */
+            uint32_t site_id;     /* monotone evalsite id                   */
+            glob_t   glob;        /* cook-pass label (set post-analysis)    */
+        } ds2;
         /* NOMM_DUS2: direct unsafe — formula statically known but complex */
         struct { nomm_t *p; nomm_t *q; glob_t glob; } dus2;
     };

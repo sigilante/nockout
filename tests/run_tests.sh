@@ -551,6 +551,18 @@ T "ska jet div: div(10,3)=3"   "0000000000000003" \
 T "ska jet mod: mod(10,3)=1"   "0000000000000001" \
     "0 N>N  6582125 N>N  10 N>N  3 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
 
+# loop detection (Stage 7e): battery = [9 2 [0 1]] — self-referential formula
+# scan detects the backedge; eval falls back to nock_op9_continue → jet fires
+T "ska loop: recursive battery, dec jet"  "0000000000000004" \
+    "0 N>N  6514020 N>N  5 N>N 0 N>N CONS  0 N>N 1 N>N CONS 2 N>N SWAP CONS 9 N>N SWAP CONS  SWAP CONS  JD JWRAP  SKNOCK  NOUN> ."
+
+# memo cache (Stage 7d): same arm called twice — second hit uses cached nomm
+# Two independent %wild-wrapped dec(5) calls; both should yield 4
+T "ska memo: double dec(5)=4,4"  "0000000000000004" \
+    "0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  SKNOCK  NOUN> ."
+T "ska memo: double dec(5)=4,4 again"  "0000000000000004" \
+    "0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  SKNOCK  NOUN> ."
+
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"
 for line in "${TLINES[@]}"; do
