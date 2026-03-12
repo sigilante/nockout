@@ -274,6 +274,14 @@ T "op11: %bout returns d"       "000000000000002B" \
 BEFORE "0 N>N  1701667188 N>N 1 N>N 99 N>N CONS CONS  1 N>N 42 N>N CONS  CONS  11 N>N SWAP CONS  NOCK DROP"
 T "op11: %tame crash recovers"  "000000000000002A" "42 ."
 
+# %tame with source that defines no new word → crash "source did not define a new word"
+# Source cord for "42" (pushes 42, defines no word): '4'=52,'2'=50 → cord = 12852
+# Label cord "dec" = 6514020. Formula: *[0 [11 [%tame [1 [6514020 12852]]] [1 0]]]
+# CONS order: ( head tail -- [head.tail] ) with tail on TOS.
+# Build [label.src]: push label(6514020) first, then src(12852) on top.
+BEFORE "0 N>N  6514020 N>N  12852 N>N  CONS  1 N>N  SWAP  CONS  1701667188 N>N  SWAP  CONS  1 N>N  0 N>N  CONS  CONS  11 N>N  SWAP  CONS  NOCK DROP"
+T "op11: %tame no-def crash recovers" "000000000000002A" "42 ."
+
 # ── Op11 / indirect atom: ATOM?, CELL?, =NOUN on actual indirect atoms ─────
 # Direct atom boundary: bit 63 = 0 → max direct = 2^63-1 = 9223372036854775807
 # First indirect atom: INC(2^63-1) = 2^63 (bits63:62 = 10 → TAG_INDIRECT)
@@ -488,6 +496,38 @@ T "bn_or:  I63|I63=I63"    "FFFFFFFFFFFFFFFF" \
 T "bn_xor: I63^I63=0"      "0000000000000000" \
     "I63  I63  BNXOR  NOUN> ."
 
+# bn_sub
+T "bn_sub: 10-3=7"         "0000000000000007" "10 N>N  3 N>N  BNSUB NOUN> ."
+T "bn_sub: 5-5=0"          "0000000000000000" "5 N>N   5 N>N  BNSUB NOUN> ."
+T "bn_sub: 1-0=1"          "0000000000000001" "1 N>N   0 N>N  BNSUB NOUN> ."
+# indirect - indirect: I63+1 - I63 = 1
+T "bn_sub: I63+1 - I63=1"  "0000000000000001" \
+    "I63  1 N>N BN+  I63  BNSUB  NOUN> ."
+# indirect - direct: I63+I63 - I63 = I63 (result stays indirect)
+T "bn_sub: 2^64 - I63=I63" "FFFFFFFFFFFFFFFF" \
+    "I63  I63  BN+  I63  BNSUB  I63  =NOUN ."
+
+# bn_lth / bn_gth / bn_lte / bn_gte — return Nock booleans (0=YES, 1=NO)
+T "bn_lth: 3<5=YES"        "0000000000000000" "3 N>N  5 N>N  BNLTH NOUN> ."
+T "bn_lth: 5<3=NO"         "0000000000000001" "5 N>N  3 N>N  BNLTH NOUN> ."
+T "bn_lth: 3<3=NO"         "0000000000000001" "3 N>N  3 N>N  BNLTH NOUN> ."
+T "bn_gth: 5>3=YES"        "0000000000000000" "5 N>N  3 N>N  BNGTH NOUN> ."
+T "bn_gth: 3>5=NO"         "0000000000000001" "3 N>N  5 N>N  BNGTH NOUN> ."
+T "bn_gth: 3>3=NO"         "0000000000000001" "3 N>N  3 N>N  BNGTH NOUN> ."
+T "bn_lte: 3<=5=YES"       "0000000000000000" "3 N>N  5 N>N  BNLTE NOUN> ."
+T "bn_lte: 5<=5=YES"       "0000000000000000" "5 N>N  5 N>N  BNLTE NOUN> ."
+T "bn_lte: 5<=4=NO"        "0000000000000001" "5 N>N  4 N>N  BNLTE NOUN> ."
+T "bn_gte: 5>=5=YES"       "0000000000000000" "5 N>N  5 N>N  BNGTE NOUN> ."
+T "bn_gte: 5>=3=YES"       "0000000000000000" "5 N>N  3 N>N  BNGTE NOUN> ."
+T "bn_gte: 2>=5=NO"        "0000000000000001" "2 N>N  5 N>N  BNGTE NOUN> ."
+# comparisons with indirect operands
+T "bn_lth: I63<I63+1=YES"  "0000000000000000" \
+    "I63  I63  1 N>N  BN+  BNLTH NOUN> ."
+T "bn_lth: I63<I63=NO"     "0000000000000001" \
+    "I63  I63  BNLTH NOUN> ."
+T "bn_gte: I63>=I63=YES"   "0000000000000000" \
+    "I63  I63  BNGTE NOUN> ."
+
 # bn_mul
 T "bn_mul: 0*5=0"          "0000000000000000" "0 N>N 5 N>N BNMUL NOUN> ."
 T "bn_mul: 3*4=12"         "000000000000000C" "3 N>N 4 N>N BNMUL NOUN> ."
@@ -532,7 +572,10 @@ T "rt: cue(jam([1 2]))==[1 2]" "FFFFFFFFFFFFFFFF" \
 
 # ── Phase 5b: %wild jet dispatch ──────────────────────────────────────────
 # JCORE1/JCORE2 build synthetic gate cores; JD wraps them in op9;
-# JWRAP adds the op11 %wild registration so jets fire via hot_state[].
+# JWRAP adds the op11 %wild registration so jets fire.
+# Op 9 dispatch: find_by_cord(label) tries Forth dict FIRST, then C hot_state[].
+# The static Forth jet definitions (dec/add/sub/mul/div/mod/lth/gth/lte/gte)
+# shadow the C hot_state[] entries; these tests exercise the Forth jets.
 # Cord values (LSB = first char): %dec=6514020 %add=6579297 %sub=6452595
 #   %mul=7107949 %lth=6845548 %gth=6845543 %lte=6648940 %gte=6648935
 
@@ -806,8 +849,8 @@ while [[ $bi -lt ${#BEFORE_LINES[@]} ]]; do
     (( ++bi ))
 done
 
-RAW=$({ printf '%s\n' "$INPUT"; sleep 2; printf '\001x'; } | \
-    timeout 30 qemu-system-aarch64 -machine raspi4b -kernel kernel8.img \
+RAW=$({ printf '%s\n' "$INPUT"; sleep 4; printf '\001x'; } | \
+    timeout 45 qemu-system-aarch64 -machine raspi4b -kernel kernel8.img \
         -display none -nographic || true)
 
 # Extract results from output lines.

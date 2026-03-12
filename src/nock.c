@@ -321,6 +321,26 @@ noun slot(noun axis, noun subject) {
 
 /* ── Nock eval ───────────────────────────────────────────────────────────── */
 
+/* ── %tame helper (noinline to isolate register allocation from nock_eval) ── */
+
+static void __attribute__((noinline)) tame_compile(noun clue) {
+    cell_t *tc = (cell_t *)(uintptr_t)cell_ptr(clue);
+    noun label = tc->head;
+    noun src   = tc->tail;
+    char buf[512];
+    size_t len = cord_to_cstr(src, buf, sizeof(buf) - 1);
+    if (len > 0) {
+        dict_entry_t *before = dict_get_latest();
+        forth_eval_string(buf, len);
+        dict_entry_t *after = dict_get_latest();
+        if (after == before)
+            nock_crash("%tame: source did not define a new word");
+        if (!noun_is_direct(label) ||
+            dict_entry_name(after) != direct_val(label))
+            nock_crash("%tame: compiled word name does not match label");
+    }
+}
+
 /*
  * Internal evaluator.  All recursive calls go through here so that
  * `jets` and `sky` are threaded through the entire computation.
@@ -548,18 +568,11 @@ loop:
 
         case HINT_TAME:
             /* clue = [label source-cord]: compile Forth source into dictionary.
-             * Idempotent: redefining an existing word in Forth is harmless.
+             * The compiled word's name must match the label cord; crash if not.
              * A non-cell clue is a malformed %tame hint → crash. */
             if (!noun_is_cell(clue))
                 nock_crash("%tame: clue must be [label source-cord] cell");
-            {
-                cell_t *tc = (cell_t *)(uintptr_t)cell_ptr(clue);
-                noun src   = tc->tail;
-                char buf[512];
-                size_t len = cord_to_cstr(src, buf, sizeof(buf) - 1);
-                if (len > 0)
-                    forth_eval_string(buf, len);
-            }
+            tame_compile(clue);
             break;
 
         case HINT_WILD:

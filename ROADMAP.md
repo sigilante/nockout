@@ -586,3 +586,141 @@ that dependency is resolved.
 - Type-11 (content atom) tag fully implemented
 - Streaming BLAKE3 over 4GB+ atoms without full RAM residency
 
+---
+
+# Cached Reasoning
+
+◐ The user wants to discuss the plan for Forth-based jets. Let me think through this carefully based on the codebase 
+knowledge.
+
+Currently:
+- Jets are C functions in `src/nock.c` (dec, add, sub, mul, lth, gth, lte, gte, div, mod)
+- They're registered in `hot_state[]` with string labels and function pointers
+- Op 9 dispatches to them via `hot_lookup(label)` → `jet_fn_t`
+- The bignum primitives are in `src/bignum.c` (C)
+- The Forth kernel in `src/forth.s` has bignum words (BN+, BNDEC, etc.) that call into C
+
+
+- The goal is to have jets be Forth words, live-patchable via the dictionary.
+
+For the architecture, I'm looking at two main approaches: either call Forth words directly from the C jet dispatcher
+  in nock.c, or move the op9 dispatch logic into Forth itself so it can look up and execute jet words from the 
+dictionary. The current C function pointer model would need to be replaced with a way to invoke Forth execution from
+  the nock interpreter. Forth word needs to receive the core as a noun on the data stack and return a noun. I'm 
+weighing three architectural approaches: wrapping Forth colon definitions with C stubs to match the C ABI, moving 
+jet lookup into Forth itself so the dispatcher calls the Forth interpreter directly, or eventually moving the entire
+  nock evaluator into Forth where jets become dictionary entries and op9 becomes a simple lookup. The key realization
+  is that the Forth dictionary essentially becomes the jet dashboard—a jet is just a word with the right name. For 
+the near term, I'd bridge the gap by having Forth jets be colon definitions that take a noun on the data stack and 
+return one, then set up the calling convention from C by placing the core on the stack and jumping to the word 
+entry. I need to clarify the Nock axis layout for the gate sample—it's at axis 6 and for addition it's a pair [a b],
+  so the jet would extract both values and pass them to the bignum addition operation. Then I'm thinking through the 
+registration layer: either map Forth dictionary entries directly in the hot state table, or wrap Forth words with 
+C-ABI adapters so they integrate seamlessly with the existing jet dispatch system. The core question is what 
+operations stay purely in C versus which ones become Forth words with C backends.
+
+The performance-critical pieces like cell allocation, reference counting, and noun equality need to stay in C, along
+  with the underlying bignum arithmetic that Forth will call into. The actual gate jets—the arithmetic operations 
+themselves—move to Forth as higher-level definitions that orchestrate the C primitives. Now I'm working through how 
+to actually bridge the call boundary: when nock.c needs to invoke a Forth jet, I need a mechanism to push the core 
+onto the Forth data stack, jump to the entry address, and retrieve the result, but the challenge is managing 
+reentrancy since the Forth interpreter isn't traditionally designed for that.
+
+The solution is to treat Forth jets as stack-based words that consume a core and produce a result, with C managing 
+the state transitions by saving and restoring the interpreter registers around each call. There's already precedent:
+  `forth_main` calls `QUIT` which calls `NOCK` which calls C `nock()`. So C↔Forth interop already exists one level 
+deep.
+
+Let me think about the simplest approach that works without a big refactor:
+
+Pragmatic approach: Forth words that compile to C-callable stubs
+
+For each Forth jet word, I'd define a C wrapper that pushes the noun onto the Forth data stack, executes the word, 
+and pops the result back. The key is having a `forth_call` function that handles the state management—pushing the 
+argument, setting up the instruction pointer to return to C, and preserving the Forth context.
+
+Looking at the existing code, `NOCK` already does this in reverse (Forth calling into C nock). What we need is the 
+mirror: C calling into Forth. The Forth data stack becomes the ABI—jets receive the core on the stack and return the
+  result the same way.
+
+For the user, I should focus on the conceptual architecture rather than implementation details, since this is a 
+planning conversation. The core insight is that bignum operations and other jets can be implemented as Forth words 
+that C can invoke through a call bridge, leveraging the existing interop pattern. Defining simple Forth jet wrappers
+  for unary and binary operations, where I extract the sample values from specific axis positions and call the 
+corresponding native functions — these are genuinely elegant. Now I'm thinking through how the C side would call 
+into these Forth jets.
+
+The existing `jet_fn_t` signature expects a C function pointer, so I need a bridge. I could write an assembly 
+trampoline that saves the Forth state, pushes the core onto the data stack, calls the Forth word, recovers the 
+result, and returns to C — essentially reversing the flow of the existing NOCK word. Alternatively, I could move jet
+  dispatch entirely into Forth so that when op9 fires, instead of looking up a C function pointer, it calls a Forth 
+word directly.
+
+The cleaner long-term approach is moving dispatch to Forth: define a `JET-DISPATCH` word that takes a label and 
+core, looks it up in the dictionary, and executes it if it has a jet flag. This keeps everything in Forth and 
+unlocks live-patching — I could define a new jet at the REPL and register it without recompiling. The C side stays 
+minimal: just call the existing NOCK word, and if a jet is found, the whole computation stays in Forth. The C 
+primitives in bignum.c and noun.c remain as the foundation that Forth jets call into, and existing C jets can 
+coexist as fallbacks or get wrapped as Forth definitions over time.
+
+
+
+  How %tame fits into Forth jets
+
+  What %tame does today
+
+  When the evaluator encounters ~%tame [label source-cord] d, it:
+
+   1. Evaluates the clue formula to get [label source-cord]
+   2. Extracts the source-cord (a Forth source string packed as an atom)
+   3. Calls forth_eval_string(buf, len) — compiles the Forth source into the live dictionary
+   4. Continues evaluating d with the newly-defined word available
+
+  The word defined by %tame is then immediately visible to find_by_cord in op 9 dispatch (Forth-dict-first lookup). So
+  %tame is the mechanism by which Nock code ships its own jet implementations.
+
+  The three-tier dispatch hierarchy
+
+  Op 9, when it has a matching %wild registration:
+
+   1. find_by_cord(label)     ← Forth dict (dynamic, %tame-compiled, live-patchable)
+         ↓ not found
+   2. hot_lookup(label)       ← C hot_state[] (static, compiled in, fast fallback)
+         ↓ not found
+   3. nock_eval(core, arm)    ← Pure Nock (always correct, no jet)
+
+  Each tier is a safety net for the one above. This is the right design.
+
+  The full flow with a concrete example
+
+  Imagine Hoon-compiled Nock for dec carries:
+
+   ~%tame  [%dec ": dec  6 SLOT  BNDEC  ;"]
+   ~%wild  [[[%dec sock-for-dec-battery]] ...]
+   formula
+
+  Execution order:
+
+   1. %tame fires first → forth_eval_string(": dec  6 SLOT  BNDEC  ;") → word dec defined in dictionary
+   2. %wild fires → wilt registration [%dec sock] scoped into eval
+   3. Op 9 fires for %dec-matched core → find_by_cord(%dec) finds the word just compiled → forth_call_jet → result
+
+  The %tame hint carries the jet source inside the Nock formula itself. No binary change needed to add a jet — the
+  formula ships its own implementation.
+
+  What %wild adds on top
+
+  %wild provides the matching half: the sock (cape+data) that identifies which cores this label applies to. %tame
+  provides the implementation half. They're complementary:
+
+  ┌─────────┬───────────────────────────────────────┬───────────────────────────────────────────┐
+  │ Hint    │ Role                                  │ Scope                                     │
+  ├─────────┼───────────────────────────────────────┼───────────────────────────────────────────┤
+  │ %tame   │ Compiles Forth source into dictionary │ Permanent (word lives in dict)            │
+  ├─────────┼───────────────────────────────────────┼───────────────────────────────────────────┤
+  │ %wild   │ Registers label→sock matching         │ Dynamic (scoped to the hinted subformula) │
+  └─────────┴───────────────────────────────────────┴───────────────────────────────────────────┘
+
+  Note: %tame doesn't need to appear inside %wild — it just needs to fire before the op 9 that would call the jet. In
+  practice they're nested: %tame at the outermost arm, %wild around the code that invokes the arm.
+

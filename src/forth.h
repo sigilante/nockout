@@ -24,6 +24,10 @@ typedef struct dict_entry dict_entry_t;
  * Returns the entry pointer, or NULL if not found / F_HIDDEN. */
 extern dict_entry_t *find_by_cord(uint64_t cord);
 
+/* Return the current head of the Forth dictionary chain (LATEST).
+ * Use before/after forth_eval_string to identify newly-compiled words. */
+extern dict_entry_t *dict_get_latest(void);
+
 /* Return the name cord of a dictionary entry (offset 16, 8-byte LE).
  * Useful for printing jet names in the SKA dashboard. */
 static inline uint64_t dict_entry_name(const dict_entry_t *e) {

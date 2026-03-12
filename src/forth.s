@@ -1650,6 +1650,58 @@ defcode "BNMOD", 5, bnmod, 0
     str     x0, [DSP, #-8]!
     NEXT
 
+// BNSUB ( n1 n2 -- n )   bignum subtraction: n1 - n2; crashes if n1 < n2
+defcode "BNSUB", 5, bnsub, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_sub
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// Bignum comparisons — return Nock booleans: 0 = YES (true), 1 = NO (false).
+// Stack: ( a b -- flag ) where b is on top.
+// bn_cmp(a, b): x0=a (second pop), x1=b (first pop); returns sign(a-b).
+
+// BNLTH ( a b -- flag )   a < b  → YES(0),  else NO(1)
+defcode "BNLTH", 5, bnlth, 0
+    ldr     x1, [DSP], #8          // x1 = b (top)
+    ldr     x0, [DSP], #8          // x0 = a
+    bl      bn_cmp
+    cmp     w0, #0                  // 32-bit compare (bn_cmp returns int)
+    cset    x0, ge                  // 1 (NO) if bn_cmp ≥ 0 (a ≥ b)
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNGTH ( a b -- flag )   a > b  → YES(0),  else NO(1)
+defcode "BNGTH", 5, bngth, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_cmp
+    cmp     w0, #0
+    cset    x0, le                  // 1 (NO) if bn_cmp ≤ 0 (a ≤ b)
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNLTE ( a b -- flag )   a <= b → YES(0),  else NO(1)
+defcode "BNLTE", 5, bnlte, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_cmp
+    cmp     w0, #0
+    cset    x0, gt                  // 1 (NO) if bn_cmp > 0 (a > b)
+    str     x0, [DSP, #-8]!
+    NEXT
+
+// BNGTE ( a b -- flag )   a >= b → YES(0),  else NO(1)
+defcode "BNGTE", 5, bngte, 0
+    ldr     x1, [DSP], #8
+    ldr     x0, [DSP], #8
+    bl      bn_cmp
+    cmp     w0, #0
+    cset    x0, lt                  // 1 (NO) if bn_cmp < 0 (a < b)
+    str     x0, [DSP, #-8]!
+    NEXT
+
 // ─────────────────────────────────────────────────────────────────────────────
 // JAM / CUE  (Phase 5a — noun serialization / deserialization)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1679,6 +1731,107 @@ defcode "SLOT", 4, slot, 0
     bl      slot                // slot(axis, subject)
     str     x0, [DSP, #-8]!
     NEXT
+
+// ─────────────────────────────────────────────────────────────────────────────
+// NOCK GATE JETS — colon definitions registered by name in the Forth dictionary.
+//
+// Op 9 dispatch in nock.c calls find_by_cord(label) first; if found, the Forth
+// word is called via forth_call_jet(entry, core).  These static definitions are
+// the default implementations; %tame hints compiled later shadow them.
+//
+// ABI: ( core -- result )  where core is a gate [battery [sample context]].
+//   Unary  gates: sample = slot(6, core)
+//   Binary gates: a = slot(12, core),  b = slot(13, core)
+//
+// SLOT takes ( axis noun -- result ) with noun on top.  To extract axis N from
+// a core sitting on the stack: push N, SWAP (core to top), then SLOT.
+// ─────────────────────────────────────────────────────────────────────────────
+defword "dec", 3, jet_dec_forth, 0
+    .quad DOCOL
+    .quad word_lit,  6,  word_swap, word_slot   // slot(6, core)
+    .quad word_bndec
+    .quad word_exit
+
+defword "add", 3, jet_add_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot    // slot(12, core) = a
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot    // slot(13, core) = b
+    .quad word_bnadd
+    .quad word_exit
+
+defword "sub", 3, jet_sub_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bnsub
+    .quad word_exit
+
+defword "mul", 3, jet_mul_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bnmul
+    .quad word_exit
+
+defword "div", 3, jet_div_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bndiv
+    .quad word_exit
+
+defword "mod", 3, jet_mod_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bnmod
+    .quad word_exit
+
+defword "lth", 3, jet_lth_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bnlth
+    .quad word_exit
+
+defword "gth", 3, jet_gth_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bngth
+    .quad word_exit
+
+defword "lte", 3, jet_lte_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bnlte
+    .quad word_exit
+
+defword "gte", 3, jet_gte_forth, 0
+    .quad DOCOL
+    .quad word_dup
+    .quad word_lit, 12, word_swap, word_slot
+    .quad word_swap
+    .quad word_lit, 13, word_swap, word_slot
+    .quad word_bngte
+    .quad word_exit
 
 // SKA-EN ( -- addr )  when non-zero, NOCK routes through ska_nock
 defvar "SKA-EN", 6, ska_enable, 0, 0
@@ -2454,6 +2607,17 @@ eval_ctx_sp:    .skip 8                 // saved C stack pointer during forth_ev
 
     .text
     .balign 4
+
+// ─────────────────────────────────────────────────────────────────────────────
+// dict_get_latest: return the current head of the dictionary chain.
+// extern dict_entry_t *dict_get_latest(void);
+// C ABI: no args, return in x0. Clobbers x1.
+// ─────────────────────────────────────────────────────────────────────────────
+    .global dict_get_latest
+dict_get_latest:
+    ldr     x1, =word_latest + 32
+    ldr     x0, [x1]
+    ret
 
 // ─────────────────────────────────────────────────────────────────────────────
 // find_by_cord: search Forth dictionary by label cord.
