@@ -551,13 +551,23 @@ regression suite).
 
 ---
 
-## Phase 10 and Beyond — Planned (Pending)
+## Phases 11–12 — Planned (Active)
 
-### Hardware Targets
+### Phase 11 — SKA Phase 2 / Full Hoon Subset
 
-RPi 3 and RPi 4 are both supported. QEMU raspi4b is the CI target.
+**STATUS: PLANNING**
 
-### Phase 10 — North Integration
+- Symbolic analysis of recursive Hoon gates (beyond the current redo-loop)
+- SKA output used for compile-time jet pre-wiring (Phase 5 design)
+- Hoon compiler bootstrap (minimal subset sufficient for kernel development)
+
+### Phase 12 — Large Atom Cold Store
+
+- BLAKE3 content-addressed atom store backed by SD card
+- Type-11 (content atom) tag fully implemented
+- Streaming BLAKE3 over 4GB+ atoms without full RAM residency
+
+## Phase 10 — North Integration (Deferred)
 
 **STATUS: PENDING EXTERNAL DEPENDENCY**
 
@@ -572,17 +582,9 @@ North integration is deliberately excluded from the current roadmap until
 the North project reaches a stable API. Do not begin Phase 10 work until
 that dependency is resolved.
 
-### Phase 11 — SKA Phase 2 / Full Hoon Subset
+### Hardware Targets
 
-- Symbolic analysis of recursive Hoon gates (beyond the current redo-loop)
-- SKA output used for compile-time jet pre-wiring (Phase 5 design)
-- Hoon compiler bootstrap (minimal subset sufficient for kernel development)
-
-### Phase 12 — Large Atom Cold Store
-
-- BLAKE3 content-addressed atom store backed by SD card
-- Type-11 (content atom) tag fully implemented
-- Streaming BLAKE3 over 4GB+ atoms without full RAM residency
+RPi 3 and RPi 4 are both supported. QEMU raspi4b is the CI target.
 
 ---
 
