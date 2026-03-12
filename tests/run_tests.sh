@@ -583,6 +583,29 @@ T "dotska: no crash on simple formula"  "000000000000002A" \
 T "eval: empty string noop"  "000000000000002A" \
     "TIB 0 EVAL  42 ."
 
+# ── Phase 9a/9b/9c integration: Forth jet shadows C jet via SKNOCK ───────────
+# 9a: find_by_cord locates the Forth dict entry by cord value.
+# 9b: forth_call_jet executes the Forth word with core on the data stack.
+# 9c: cook_find_jet checks Forth dict before hot_state[]; Forth jet wins.
+#
+# Forth jet signature: ( core -- result )
+#   dec: slot(6, core) → direct val → decrement → re-wrap as noun
+#   add: DUP core, slot(12) → raw a, swap core back, slot(13) → raw b, add
+#
+# cord("dec") = 'd'+'e'<<8+'c'<<16 = 6514020  (matches hot_state[] label)
+# cord("add") = 'a'+'d'<<8+'d'<<16 = 6579297  (matches hot_state[] label)
+#
+# NOTE: these definitions persist for the remainder of the QEMU session,
+# so all subsequent SKNOCK tests that use those labels will use Forth jets.
+T "9b: Forth dec jet dec(5)=4"    "0000000000000004" \
+    ": dec  6 >NOUN SWAP SLOT  NOUN> 1 -  >NOUN ;  0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  SKNOCK  NOUN> ."
+T "9b: Forth dec jet dec(100)=99" "0000000000000063" \
+    "0 N>N  6514020 N>N  100 N>N  JCORE1 JD JWRAP  SKNOCK  NOUN> ."
+T "9b: Forth add jet add(3,4)=7"  "0000000000000007" \
+    ": add  DUP  12 >NOUN SWAP SLOT  NOUN>  SWAP  13 >NOUN SWAP SLOT  NOUN>  +  >NOUN ;  0 N>N  6579297 N>N  3 N>N  4 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
+T "9b: Forth add jet add(10,20)=30" "000000000000001E" \
+    "0 N>N  6579297 N>N  10 N>N  20 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
+
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"
 for line in "${TLINES[@]}"; do
