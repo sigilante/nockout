@@ -400,6 +400,17 @@ T "bn_mul: 2^63*2=bex(64)"     "FFFFFFFFFFFFFFFF" \
 # BNDIV: multi-limb ÷ indirect (2^64 ÷ 2^63 = 2)
 T "bn_div: 2^64/2^63=2"        "0000000000000002" \
     "I63  I63  BN+  I63  BNDIV  NOUN> ."
+# BNMOD: indirect operands — 2^64 mod 2^63 = 0
+T "bn_mod: 2^64 mod 2^63=0"   "0000000000000000" \
+    "I63  I63  BN+  I63  BNMOD  NOUN> ."
+# BNMOD: (2^63+1) mod 2^63 = 1
+T "bn_mod: 2^63+1 mod 2^63=1" "0000000000000001" \
+    "I63  1 N>N  BN+  I63  BNMOD  NOUN> ."
+# BNMUL: indirect × indirect = 2^126
+T "bn_mul: I63*I63 atom"       "FFFFFFFFFFFFFFFF" \
+    "I63  I63  BNMUL  ATOM? ."
+T "bn_mul: I63*I63=bex(126)"   "FFFFFFFFFFFFFFFF" \
+    "I63  I63  BNMUL  126 BNBEX  =NOUN ."
 
 # N. decimal output tests (TD captures decimal strings)
 TD "N.: zero"                  "0"                    "0 N>N N."
@@ -421,6 +432,9 @@ T "bn_met: 2^62-1"         "000000000000003E" "4611686018427387903 N>N BNMET ."
 # bn_met on indirect atom 2^62 → 63 bits
 T "bn_met: 2^62 indirect"  "000000000000003F" \
     "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  BNMET ."
+# bn_met on multi-limb: bex(64) = 2^64 has 65 bits
+T "bn_met: 2^64 multilimb" "0000000000000041" \
+    "I63  I63  BN+  BNMET ."
 
 # bn_bex (result is atom noun)
 T "bn_bex: 0 = 1"          "0000000000000001" "0 BNBEX NOUN> ."
@@ -436,6 +450,9 @@ T "bn_lsh: by 3"           "0000000000000038" "7 N>N 3 BNLSH NOUN> ."
 T "bn_lsh: 1<<62 indirect" "FFFFFFFFFFFFFFFF" "1 N>N 62 BNLSH ATOM? ."
 # lsh(1,62) == bex(62)
 T "bn_lsh: eq bex"         "FFFFFFFFFFFFFFFF" "1 N>N 62 BNLSH  62 BNBEX  =NOUN ."
+# lsh on indirect input: I63 << 1 = 2^64 = bex(64)
+T "bn_lsh: I63 lsh 1"      "FFFFFFFFFFFFFFFF" \
+    "I63  1 BNLSH  64 BNBEX  =NOUN ."
 
 # bn_rsh
 T "bn_rsh: no-op"          "0000000000000007" "7 N>N 0 BNRSH NOUN> ."
@@ -446,6 +463,9 @@ T "bn_lsh/rsh roundtrip"   "0000000000000007" "7 N>N 10 BNLSH 10 BNRSH NOUN> ."
 # rsh on indirect: rsh(2^62, 1) = 2^61 (direct)
 T "bn_rsh: indirect→direct" "2000000000000000" \
     "0 N>N  4 N>N 1 N>N 4611686018427387903 N>N CONS CONS  NOCK  1 BNRSH NOUN> ."
+# rsh on multi-limb: 2^64 >> 1 = 2^63 (= I63)
+T "bn_rsh: 2^64>>1=I63"    "FFFFFFFFFFFFFFFF" \
+    "I63  I63  BN+  1 BNRSH  I63  =NOUN ."
 
 # bn_or / bn_and / bn_xor
 T "bn_or:  5|3=7"          "0000000000000007" "5 N>N 3 N>N BNOR  NOUN> ."
@@ -458,6 +478,15 @@ T "bn_or: indirect result" "FFFFFFFFFFFFFFFF" \
 # xor is own inverse: xor(xor(a,b),b) = a
 T "bn_xor: self-inverse"   "FFFFFFFFFFFFFFFF" \
     "42 N>N  99 N>N  BNXOR  99 N>N  BNXOR  42 N>N  =NOUN ."
+# bitwise with indirect operands: I63 AND I63 = I63
+T "bn_and: I63&I63=I63"    "FFFFFFFFFFFFFFFF" \
+    "I63  I63  BNAND  I63  =NOUN ."
+# I63 OR I63 = I63
+T "bn_or:  I63|I63=I63"    "FFFFFFFFFFFFFFFF" \
+    "I63  I63  BNOR   I63  =NOUN ."
+# I63 XOR I63 = 0
+T "bn_xor: I63^I63=0"      "0000000000000000" \
+    "I63  I63  BNXOR  NOUN> ."
 
 # bn_mul
 T "bn_mul: 0*5=0"          "0000000000000000" "0 N>N 5 N>N BNMUL NOUN> ."
