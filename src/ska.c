@@ -1227,6 +1227,7 @@ static nomm1_t *cook_nomm(const nomm_t *n, const wilt_t *jets)
         return r;
 
     case NOMM_10:
+        r->tag           = NOMM_10;
         r->n10.ax        = n->n10.ax;
         r->n10.val_fol   = cook_nomm(n->n10.val_fol, jets);
         r->n10.tgt_fol   = cook_nomm(n->n10.tgt_fol, jets);
