@@ -1409,11 +1409,25 @@ noun run_nomm1(const nomm1_t *n, noun sub,
     case NOMM_11: {
         if (n->n11.is_dyn) {
             noun clue = run_nomm1(n->n11.clue, sub, jets, sky);
-            if (noun_is_direct(n->n11.tag) &&
-                direct_val(n->n11.tag) == 0x646C6977ULL /* %wild */) {
-                wilt_t wild_buf;
-                ska_parse_wilt(clue, &wild_buf);
-                return run_nomm1(n->n11.main, sub, &wild_buf, sky);
+            if (noun_is_direct(n->n11.tag)) {
+                uint64_t tag = direct_val(n->n11.tag);
+                if (tag == 0x646C6977ULL /* %wild */) {
+                    wilt_t wild_buf;
+                    ska_parse_wilt(clue, &wild_buf);
+                    return run_nomm1(n->n11.main, sub, &wild_buf, sky);
+                }
+                if (tag == 0x656D6174ULL /* %tame */) {
+                    /* clue = [label source-cord]: compile Forth source */
+                    if (noun_is_cell(clue)) {
+                        cell_t *tc = (cell_t *)(uintptr_t)cell_ptr(clue);
+                        noun src   = tc->tail;
+                        char buf[512];
+                        size_t len = cord_to_cstr(src, buf, sizeof(buf) - 1);
+                        if (len > 0)
+                            forth_eval_string(buf, len);
+                    }
+                    return run_nomm1(n->n11.main, sub, jets, sky);
+                }
             }
             (void)clue;
         }

@@ -180,7 +180,70 @@ noun make_atom(const uint64_t *limbs, uint64_t size) {
     return indirect(hash62);
 }
 
-/* ── noun_heap_init ──────────────────────────────────────────────────────────── */
+/* ── cord_from_bytes ─────────────────────────────────────────────────────────
+ * Create a cord (atom) from a C byte string.
+ * Strings ≤ 7 bytes → direct atom (no allocation).
+ * Longer strings → indirect atom via make_atom + BLAKE3.
+ */
+noun cord_from_bytes(const char *str, size_t len)
+{
+    /* Trim trailing null bytes — cords don't include them in the value */
+    while (len > 0 && str[len - 1] == '\0')
+        len--;
+    if (len == 0)
+        return direct(0);
+
+    if (len <= 7) {
+        uint64_t v = 0;
+        for (size_t i = 0; i < len; i++)
+            v |= (uint64_t)(uint8_t)str[i] << (8 * i);
+        return direct(v);
+    }
+
+    /* Pack bytes into 64-bit limbs (LE), cap at 256 bytes */
+    size_t nlimbs = (len + 7) / 8;
+    if (nlimbs > 32) nlimbs = 32;
+    uint64_t limbs[32];
+    for (size_t i = 0; i < 32; i++) limbs[i] = 0;
+    for (size_t i = 0; i < len && i < nlimbs * 8; i++)
+        ((uint8_t *)limbs)[i] = (uint8_t)str[i];
+    return make_atom(limbs, nlimbs);
+}
+
+/* ── cord_to_cstr ────────────────────────────────────────────────────────────
+ * Decode a cord atom to a null-terminated C string.
+ * Writes at most bufsz-1 bytes.  Returns the string length.
+ */
+size_t cord_to_cstr(noun n, char *buf, size_t bufsz)
+{
+    if (!bufsz) return 0;
+    if (noun_is_direct(n)) {
+        uint64_t v = direct_val(n);
+        size_t len = 0;
+        while (v && len < bufsz - 1) {
+            buf[len++] = (char)(v & 0xFF);
+            v >>= 8;
+        }
+        buf[len] = '\0';
+        return len;
+    }
+    if (noun_is_indirect(n)) {
+        uint64_t hash62 = n & 0x3FFFFFFFFFFFFFFFULL;
+        atom_t *a = atom_store_get(hash62);
+        if (!a) { buf[0] = '\0'; return 0; }
+        size_t bytes = a->size * 8;
+        /* strip trailing zero bytes of the last limb */
+        while (bytes > 0 && ((uint8_t *)a->limbs)[bytes - 1] == 0)
+            bytes--;
+        if (bytes >= bufsz) bytes = bufsz - 1;
+        for (size_t i = 0; i < bytes; i++)
+            buf[i] = ((const char *)a->limbs)[i];
+        buf[bytes] = '\0';
+        return bytes;
+    }
+    buf[0] = '\0';
+    return 0;
+}
 
 void noun_heap_init(void) {
     heap_ptr = (uint8_t *)HEAP_BASE;

@@ -89,6 +89,13 @@ int   noun_eq(noun a, noun b);
  */
 noun  make_atom(const uint64_t *limbs, uint64_t size);
 
+/* cord_from_bytes: create a cord (atom) from a C byte string */
+noun  cord_from_bytes(const char *str, size_t len);
+
+/* cord_to_cstr: decode a cord atom to a null-terminated C string.
+ * Returns the string length; writes at most bufsz-1 bytes into buf. */
+size_t cord_to_cstr(noun n, char *buf, size_t bufsz);
+
 /*
  * atom_store_get: look up a 62-bit BLAKE3 hash in the atom store.
  * Returns a pointer to the atom_t, or NULL if not found.

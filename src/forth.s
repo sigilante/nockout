@@ -1669,6 +1669,17 @@ defcode "SLOT", 4, slot, 0
 // SKA-EN ( -- addr )  when non-zero, NOCK routes through ska_nock
 defvar "SKA-EN", 6, ska_enable, 0, 0
 
+// SCORD ( -- addr )  scratch variable for saving a cord noun across operations
+defvar "SCORD", 5, scord_var, 0, 0
+
+// S>CRD ( addr len -- cord )  create a cord (atom) from a byte string in memory
+defcode "S>CRD", 5, str_to_cord, 0
+    ldr     x1, [DSP], #8               // x1 = len
+    ldr     x0, [DSP], #8               // x0 = addr (src)
+    bl      cord_from_bytes             // cord_from_bytes(addr, len) → x0
+    str     x0, [DSP, #-8]!
+    NEXT
+
 // NOCK ( subject formula -- product )   Nock 4K evaluator
 // When SKA-EN is non-zero, routes through ska_nock (SKA-annotated eval).
 defcode "NOCK", 4, nock_word, 0

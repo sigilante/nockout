@@ -38,12 +38,27 @@ TD() {  # TD "description"  "expected-decimal-string"  "forth expression"
 }
 
 # ── Preamble (defines helpers, produces no numeric output) ─────────────────
+# Also pre-builds the sub source cord in SCORD using 8-byte aligned stores
+# (bypasses TIB 255-char limit by splitting across multiple lines).
+# Sub source: ": sub DUP 12 >NOUN SWAP SLOT NOUN> SWAP 13 >NOUN SWAP SLOT NOUN> - >NOUN ;"
 PREAMBLE=': N>N >NOUN ;
 : C>N N>N SWAP N>N SWAP CONS ;
 : JCORE1 0 N>N CONS 0 N>N SWAP CONS ;
 : JCORE2 CONS 0 N>N CONS 0 N>N SWAP CONS ;
 : JD 1 N>N SWAP CONS 2 N>N SWAP CONS 9 N>N SWAP CONS ;
-: JWRAP SWAP 1 N>N 0 N>N CONS CONS 0 N>N CONS 1 N>N SWAP CONS 1684826487 N>N SWAP CONS SWAP CONS 11 N>N SWAP CONS ;'
+: JWRAP SWAP 1 N>N 0 N>N CONS CONS 0 N>N CONS 1 N>N SWAP CONS 1684826487 N>N SWAP CONS SWAP CONS 11 N>N SWAP CONS ;
+HERE @ DUP SCORD ! 80 + HERE !
+SCORD @ 6144071398889562170 SWAP !
+SCORD @ 8 + 5714573285181694032 SWAP !
+SCORD @ 16 + 2328432850663132757 SWAP !
+SCORD @ 24 + 6147217917144419411 SWAP !
+SCORD @ 32 + 2328432850663128654 SWAP !
+SCORD @ 40 + 5644504905447125809 SWAP !
+SCORD @ 48 + 5499775099015222048 SWAP !
+SCORD @ 56 + 4489619677636482127 SWAP !
+SCORD @ 64 + 5644504905447124256 SWAP !
+SCORD @ 72 + 15136 SWAP !
+SCORD @ 74 S>CRD  SCORD !'
 
 # ── Slot / op 0 ────────────────────────────────────────────────────────────
 # SLOT word direct
@@ -605,6 +620,38 @@ T "9b: Forth add jet add(3,4)=7"  "0000000000000007" \
     ": add  DUP  12 >NOUN SWAP SLOT  NOUN>  SWAP  13 >NOUN SWAP SLOT  NOUN>  +  >NOUN ;  0 N>N  6579297 N>N  3 N>N  4 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
 T "9b: Forth add jet add(10,20)=30" "000000000000001E" \
     "0 N>N  6579297 N>N  10 N>N  20 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
+
+# ── Phase 9f — %tame hint: compile Forth jet from Nock at eval time ──────────
+# %tame fires at eval time → calls forth_eval_string(source-cord) → Forth word
+# appears in dictionary.  The enclosing %wild scopes the jet registration.
+# nock_op9_continue then finds the new word via find_by_cord (runtime lookup).
+#
+# Formula structure:
+#   [11 [[%tame [1 [label src-cord]]] [11 [[%wild [1 wilt]] op9-body]]]]
+#
+# %tame cord = 't'+'a'<<8+'m'<<16+'e'<<24 = 1701667188
+# %wild cord = 1684826487  (already used in JWRAP)
+# label cord  = 'sub' = 6452595  (cord("sub"))
+#
+# SCORD is pre-loaded in the preamble with the 74-byte sub source cord:
+#   ": sub DUP 12 >NOUN SWAP SLOT NOUN> SWAP 13 >NOUN SWAP SLOT NOUN> - >NOUN ;"
+# The cord is built via 8-byte aligned ! stores (each preamble line ≤40 chars)
+# to stay within the 255-byte TIB limit.  HERE @ is used (not HERE, which is
+# a defvar that pushes the storage-cell address, not the dict-top value).
+
+# Test 0: indirect atom sanity — SCORD @ should be a TAG_INDIRECT noun.
+# TAG_INDIRECT = 2<<62 = 0x8000000000000000; bits 63:62 = 10.
+# Verify: (SCORD @) >> 62 == 2.
+T "9f: SCORD is indirect atom (bits63:62=10)" "0000000000000002" \
+    "SCORD @  62 RSH ."
+
+# Test 1: %tame+%wild: define 'sub' jet via Nock hint, evaluate sub(10,3)=7
+T "9f: %tame defines sub(10-3)=7"   "0000000000000007" \
+    "0 N>N  6452595 N>N  10 N>N  3 N>N  JCORE2 JD JWRAP  SCORD @  6452595 N>N SWAP CONS  1 N>N SWAP CONS  1701667188 N>N SWAP CONS  SWAP CONS  11 N>N SWAP CONS  SKNOCK  NOUN> ."
+
+# Test 2: sub definition persists — same Forth word fires again (no re-tame needed)
+T "9f: sub persists sub(100-1)=99"  "0000000000000063" \
+    "0 N>N  6452595 N>N  100 N>N  1 N>N  JCORE2 JD JWRAP  SKNOCK  NOUN> ."
 
 # ── Build input and run ────────────────────────────────────────────────────
 INPUT="$PREAMBLE"

@@ -4,6 +4,7 @@
 #include "bignum.h"
 #include "uart.h"
 #include "setjmp.h"
+#include "forth.h"
 
 /* ── Crash recovery point ────────────────────────────────────────────────── */
 
@@ -57,6 +58,7 @@ static void noun_print(noun n, int depth) {
 #define HINT_MEAN  0x6E61656DULL   /* %mean */
 #define HINT_MEMO  0x6F6D656DULL   /* %memo */
 #define HINT_BOUT  0x74756F62ULL   /* %bout */
+#define HINT_TAME  0x656D6174ULL   /* %tame = 't'+'a'<<8+'m'<<16+'e'<<24 */
 
 /* ── Wilt parsing ────────────────────────────────────────────────────────── */
 
@@ -542,6 +544,19 @@ loop:
 
         switch (tag) {
 
+        case HINT_TAME:
+            /* clue = [label source-cord]: compile Forth source into dictionary.
+             * Idempotent: redefining an existing word in Forth is harmless. */
+            if (noun_is_cell(clue)) {
+                cell_t *tc = (cell_t *)(uintptr_t)cell_ptr(clue);
+                noun src   = tc->tail;
+                char buf[512];
+                size_t len = cord_to_cstr(src, buf, sizeof(buf) - 1);
+                if (len > 0)
+                    forth_eval_string(buf, len);
+            }
+            break;
+
         case HINT_WILD:
             /* Parse $wilt clue into wild_buf; scope registrations into d */
             parse_wilt(clue, &wild_buf);
@@ -596,7 +611,14 @@ noun nock_op9_continue(noun core, noun ax,
         for (int i = 0; i < jets->len; i++) {
             if (sock_match(jets->e[i].sock.cape,
                            jets->e[i].sock.data, core)) {
-                jet_fn_t fn = hot_lookup(jets->e[i].label);
+                noun label = jets->e[i].label;
+                /* Forth dict first: supports jets compiled via %tame */
+                if (noun_is_direct(label)) {
+                    dict_entry_t *fe = find_by_cord(label);
+                    if (fe != NULL)
+                        return forth_call_jet(fe, core);
+                }
+                jet_fn_t fn = hot_lookup(label);
                 if (fn != NULL)
                     return fn(core, jets, sky);
             }
