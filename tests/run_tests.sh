@@ -734,6 +734,54 @@ T "ska memo: double dec(5)=4,4"  "0000000000000004" \
 T "ska memo: double dec(5)=4,4 again"  "0000000000000004" \
     "0 N>N  6514020 N>N  5 N>N  JCORE1 JD JWRAP  SKNOCK  NOUN> ."
 
+# ── Op2 partial eval (SKA Phase 2) ───────────────────────────────────────
+# When the formula-formula (c in [2 b c]) produces a statically known result,
+# SKA can resolve the inner eval at analysis time instead of falling back to
+# nock_eval.  This is the Op2 partial eval optimization.
+
+# Op2 with known formula [0 1] → inlined as NOMM_7 (slot identity)
+# *[42 [2 [0 1] [1 [0 1]]]] = *[42 [0 1]] = 42
+T "ska op2: known formula [0 1]"  "000000000000002A" \
+    "42 N>N  2 N>N  0 N>N 1 N>N CONS  1 N>N  0 N>N 1 N>N CONS  CONS  CONS CONS  SKNOCK NOUN> ."
+
+# Op2 with known formula [1 99] → inlined as NOMM_7 (constant)
+# *[42 [2 [0 1] [1 [1 99]]]] = *[42 [1 99]] = 99
+T "ska op2: known formula [1 99]"  "0000000000000063" \
+    "42 N>N  2 N>N  0 N>N 1 N>N CONS  1 N>N  1 N>N 99 N>N CONS  CONS  CONS CONS  SKNOCK NOUN> ."
+
+# Op2 with known complex formula [4 [0 1]] → DS2 fresh scan
+# *[5 [2 [0 1] [1 [4 [0 1]]]]] = *[5 [4 [0 1]]] = 6
+T "ska op2: known complex formula"  "0000000000000006" \
+    "5 N>N  2 N>N  0 N>N 1 N>N CONS  1 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS  CONS CONS  SKNOCK NOUN> ."
+
+# Op2 with formula from slot — used by plain NOCK (not SKNOCK)
+# *[[42 [4 [0 1]]] [2 [0 2] [0 3]]]
+#   b=[0 2] → 42 (head of subject), c=[0 3] → [4 [0 1]] (tail)
+#   Then *[42 [4 [0 1]]] = inc(42) = 43
+T "ska op2: formula from slot via NOCK"  "000000000000002B" \
+    "42 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS  2 N>N  0 N>N 2 N>N CONS  0 N>N 3 N>N CONS  CONS CONS  NOCK NOUN> ."
+
+# Op2 that resolves to an op9-like gate call via known formula
+# *[42 [2 [1 0] [1 [4 [0 1]]]]]
+#   [1 0] → 0 (subject), [1 [4 [0 1]]] → [4 [0 1]] (known formula)
+#   *[0 [4 [0 1]]] = 1
+T "ska op2: op2 resolves to inc(0)"  "0000000000000001" \
+    "42 N>N  2 N>N  1 N>N 0 N>N CONS  1 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS CONS  SKNOCK NOUN> ."
+
+# Nested op2: outer op2 resolves inner op2's formula
+# *[5 [2 [1 5] [1 [2 [1 5] [1 [4 [0 1]]]]]]]
+#   inner: [1 5]→5, [1 [4 [0 1]]]→[4 [0 1]], *[5 [4 [0 1]]]=6
+#   outer: [1 5]→5, [1 inner]→inner formula, *[5 inner] = 6
+# Simpler: *[5 [2 [0 1] [1 [4 [0 1]]]]] = *[5 [4 [0 1]]] = 6 (already tested)
+# Instead: *[10 [2 [1 10] [1 [4 [0 1]]]]] = *[10 [4 [0 1]]] = 11
+T "ska op2: nested known formula"  "000000000000000B" \
+    "10 N>N  2 N>N  1 N>N 10 N>N CONS  1 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS CONS  SKNOCK NOUN> ."
+
+# Op2 via SKA-EN (NOCK routes through ska_nock)
+# *[42 [2 [0 1] [1 [4 [0 1]]]]] = *[42 [4 [0 1]]] = 43
+T "ska-en op2: known formula via NOCK"  "000000000000002B" \
+    "1 SKA-EN !  42 N>N  2 N>N  0 N>N 1 N>N CONS  1 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS CONS  NOCK NOUN> .  0 SKA-EN !"
+
 # ── Stage 8g: SKA-EN + .SKA ──────────────────────────────────────────────
 # SKA-EN routes NOCK through ska_nock; results must match plain NOCK.
 T "ska-enable: dec(5)=4 via NOCK"  "0000000000000004" \

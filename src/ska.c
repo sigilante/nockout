@@ -596,7 +596,20 @@ static nomm_t *scan_cell(sock_t sub, noun head, noun tail)
         n->prod    = sock_known(tail);
         return n;
 
-    /* ── 2: eval *[*[a b] *[a c]] — conservative NOMM_I2 at Stage 8c ── */
+    /* ── 2: eval *[*[a b] *[a c]] ──
+     *
+     * Scan both sub-formulas.  If the formula-formula (q) produces a
+     * statically KNOWN result, we can resolve the inner application at
+     * analysis time — same loop/memo/fresh-scan machinery as Op 9.
+     *
+     * Sub-cases when cape(prod_q) == &:
+     *   a) resolved is [0 ax] or [1 val] → inline as NOMM_7 (compose)
+     *   b) memo cache hit                → reuse pre-scanned body
+     *   c) fols_stack loop detected       → NOMM_DS2 backedge
+     *   d) fresh scan of resolved formula → NOMM_DS2 with body
+     *
+     * When cape(prod_q) != & → NOMM_I2 (runtime fallback, unchanged).
+     */
     case 2: {
         if (!noun_is_cell(tail)) {
             uart_puts("ska: op2 tail not cell\n");
@@ -606,10 +619,113 @@ static nomm_t *scan_cell(sock_t sub, noun head, noun tail)
         nomm_t *p = scan(sub, args->head);   /* subject formula  */
         nomm_t *q = scan(sub, args->tail);   /* formula formula  */
         if (!p || !q) return NULL;
-        n->tag   = NOMM_I2;
-        n->i2.p  = p;
-        n->i2.q  = q;
-        n->prod  = sock_dunno(sub);
+
+        if (!cape_is_known(q->prod.cape)) {
+            /* Formula not statically known — indirect fallback. */
+            n->tag   = NOMM_I2;
+            n->i2.p  = p;
+            n->i2.q  = q;
+            n->prod  = sock_dunno(sub);
+            return n;
+        }
+
+        /* Formula IS known: resolve and analyze. */
+        noun resolved_fol = q->prod.data;
+        sock_t new_sub = p->prod;   /* subject for the resolved formula */
+
+        /* (a) Inline trivial formulas as NOMM_7 (compose). */
+        if (noun_is_cell(resolved_fol)) {
+            cell_t *rf = (cell_t *)(uintptr_t)cell_ptr(resolved_fol);
+            if (noun_is_direct(rf->head)) {
+                uint64_t op = direct_val(rf->head);
+                if (op == 0 || op == 1) {
+                    /* Rewrite [2 b c] → [7 b resolved_fol] when c is
+                     * known to produce [0 ax] or [1 val]. */
+                    nomm_t *body = scan(new_sub, resolved_fol);
+                    if (body) {
+                        n->tag  = NOMM_7;
+                        n->n7.p = p;
+                        n->n7.q = body;
+                        n->prod = body->prod;
+                        return n;
+                    }
+                    /* scan failed — fall through to indirect */
+                }
+            }
+        }
+
+        /* (b) Memo cache: same formula + compatible subject already scanned. */
+        for (int m = 0; m < g_memo_len; m++) {
+            if (!noun_eq(g_memo[m].fol, resolved_fol)) continue;
+            if (!sock_huge(g_memo[m].sub, new_sub)) continue;
+
+            uint32_t this_site  = g_site_gen++;
+            n->tag              = NOMM_DS2;
+            n->ds2.p            = p;
+            n->ds2.body         = g_memo[m].body;
+            n->ds2.fol          = resolved_fol;
+            n->ds2.ax           = 0;
+            n->ds2.is_backedge  = false;
+            n->ds2.site_id      = this_site;
+            n->prod             = g_memo[m].prod;
+            return n;
+        }
+
+        /* (c) Close heuristic: loop detection via fols_stack. */
+        for (int i = g_fols_top - 1; i >= 0; i--) {
+            if (!noun_eq(g_fols[i].fol, resolved_fol)) continue;
+            uint32_t par_site = g_fols[i].site_id;
+            if (is_blocked(par_site, g_site_gen)) continue;
+            if (!sock_huge(g_fols[i].sub, new_sub)) continue;
+
+            uint32_t kid_site = g_site_gen++;
+            record_frond(par_site, kid_site, g_fols[i].sub, new_sub);
+
+            n->tag              = NOMM_DS2;
+            n->ds2.p            = p;
+            n->ds2.body         = NULL;   /* backedge */
+            n->ds2.fol          = resolved_fol;
+            n->ds2.ax           = 0;
+            n->ds2.is_backedge  = true;
+            n->ds2.site_id      = kid_site;
+            n->prod             = sock_dunno(sub);
+            return n;
+        }
+
+        /* (d) Fresh scan of the resolved formula. */
+        uint32_t this_site = g_site_gen++;
+        push_fols(resolved_fol, new_sub, this_site);
+
+        nomm_t *body = scan(new_sub, resolved_fol);
+
+        pop_fols();
+
+        if (!body) {
+            /* Scan failed — fall back to indirect. */
+            n->tag   = NOMM_I2;
+            n->i2.p  = p;
+            n->i2.q  = q;
+            n->prod  = sock_dunno(sub);
+            return n;
+        }
+
+        /* Cache result for future callers. */
+        if (g_memo_len < SKA_MAX_MEMO) {
+            g_memo[g_memo_len].fol  = resolved_fol;
+            g_memo[g_memo_len].sub  = new_sub;
+            g_memo[g_memo_len].body = body;
+            g_memo[g_memo_len].prod = body->prod;
+            g_memo_len++;
+        }
+
+        n->tag             = NOMM_DS2;
+        n->ds2.p           = p;
+        n->ds2.body        = body;
+        n->ds2.fol         = resolved_fol;
+        n->ds2.ax          = 0;
+        n->ds2.is_backedge = false;
+        n->ds2.site_id     = this_site;
+        n->prod            = body->prod;
         return n;
     }
 
@@ -1511,9 +1627,13 @@ noun run_nomm1(const nomm1_t *n, noun sub,
             return nock_ex(core, fol, jets, sky);
         }
 
-        /* 3. Direct (DS2 / NOMM_9 converted): nock_op9_continue for
-         *    dynamic jet dispatch + nock_eval fallback. */
-        return nock_op9_continue(core, direct(n->n2.ax), jets, sky);
+        /* 3. Direct: op9-style (has arm axis) or op2-style (known formula). */
+        if (n->n2.ax != 0)
+            return nock_op9_continue(core, direct(n->n2.ax), jets, sky);
+        if (n->n2.has_bell)
+            return nock_ex(core, n->n2.bell.fol, jets, sky);
+        nock_crash("run_nomm1: NOMM_2 with no axis and no bell");
+        return NOUN_ZERO;
     }
 
     case NOMM_10: {
