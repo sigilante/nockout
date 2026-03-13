@@ -1,4 +1,5 @@
-# nock-on-metal
+# Trinitite
+### Native Nock/Forth OS for Raspberry Pi
 
 ![](./img/hero.jpg)
 
