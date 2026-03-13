@@ -275,6 +275,6 @@ Emery
 https://en.wikipedia.org/wiki/List_of_United_States_nuclear_weapons_tests
 -->
 
-![](./img/icon-64.png)
+![](./img/icon-64.jpg)
 
 © 2026 Sigilante, released under the MIT License
