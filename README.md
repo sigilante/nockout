@@ -7,12 +7,6 @@ Trinitite is a tiny operating system for Raspberry Pi 4/5, written in Forth with
 
 Trinitite is an experimental platform in which I jammed a lot of half-baked ideas, like live jet loading (as Forth words), a hash-based indirect atom arena, and a Forth-based implementation of a Nock standard library.
 
-![](./img/icon-64.png)
-
-(c) 2026 Sigilante, released under the MIT License
-
----
-
 ## Building
 
 ```
@@ -235,3 +229,13 @@ confirm `dtoverlay=disable-bt` and `enable_uart=1` in `config.txt`.
 **Hangs after a few lines** — flow control issue; disable RTS/CTS in your terminal.
 
 **`ok` appears but input is ignored** — check the TX wire (Pi RXD ← adapter TX).
+
+## Release history and roadmap
+
+* [Roadmap](ROADMAP.md)
+
+First public release ("v0.1-alpha", not properly versioned yet) on ~2026.03.13.
+
+![](./img/icon-64.png)
+
+© 2026 Sigilante, released under the MIT License
