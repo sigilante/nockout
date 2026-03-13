@@ -236,6 +236,45 @@ confirm `dtoverlay=disable-bt` and `enable_uart=1` in `config.txt`.
 
 First public release ("v0.1-alpha", not properly versioned yet) on ~2026.03.13.
 
+<!--
+Named releases will be based on US nuclear weapons tests, in roughly chronological order. The first few are:
+Trinity
+Crossroads
+Sandstone
+Ranger
+Greenhouse
+Buster-Jangle
+Tumbler-Snapper
+Ivy
+Upshot-Knothole
+Castle
+Teapot
+Wigwam
+Project 56
+Redwing
+Project 57
+Plumbbob
+Project 58
+Hardtack I
+Argus
+Hardtack II
+Nougat
+Sunbeam
+Dominic
+Fishbowl
+Storac
+Roller Coaster
+Niblick
+Whetstone
+Flintlock
+Latchkey
+Crosstie
+Bowline
+Mandrel
+Emery
+https://en.wikipedia.org/wiki/List_of_United_States_nuclear_weapons_tests
+-->
+
 ![](./img/icon-64.png)
 
 © 2026 Sigilante, released under the MIT License
