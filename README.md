@@ -164,22 +164,26 @@ Use **3.3 V logic only** — 5 V will damage the Pi.
 ```
 Pi GPIO 14  (TXD, pin 8)   →  RX  on serial adapter
 Pi GPIO 15  (RXD, pin 10)  →  TX  on serial adapter
-Pi GND      (pin 6)        →  GND on serial adapter
+Pi GND      (pin 9)        →  GND on serial adapter
 ```
 
 Do **not** connect the adapter's VCC/3.3V/5V pin to the Pi.
 Power the Pi from its own USB-C port.
 
-```
-40-pin header (looking at the Pi from above, header at top-right):
+Pin 9 is one of eight GND pins on the header — if it is occupied,
+pins 6, 14, 20, 25, 30, 34, or 39 all work.
 
-  pin 1  [ ][ ] pin 2
-  ...
-  pin 6  [G][ ]       ← GND
-  pin 7  [ ][ ]
-  pin 8  [T][ ]       ← TXD (GPIO 14)
-  pin 9  [ ][ ]
-  pin 10 [R][ ]       ← RXD (GPIO 15)
+```
+40-pin header (USB ports facing you, header at top-right):
+
+         left col          right col
+  pin 1  (3V3)     [ ][ ]  (5V)     pin 2
+  pin 3  (SDA)     [ ][ ]  (5V)     pin 4
+  pin 5  (SCL)     [ ][ ]  (GND)    pin 6
+  pin 7  (GPIO4)   [ ][ ]  (TXD) ←  pin 8   → adapter RX
+  pin 9  (GND)  ←  [ ][ ]  (RXD) ←  pin 10  → adapter TX
+                 ↑
+           adapter GND
 ```
 
 ### Serial terminal
