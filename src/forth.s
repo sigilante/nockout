@@ -2846,7 +2846,7 @@ str_bench_def_end:
     .balign 8
     .global cold_start
 cold_start:
-    .quad   word_kernel
+    .quad   word_quit
 
 // ═════════════════════════════════════════════════════════════════════════════
 // ENTRY POINT
