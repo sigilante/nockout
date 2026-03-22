@@ -844,6 +844,43 @@ T "ska op2: op2 resolves to inc(0)"  "0000000000000001" \
 T "ska op2: nested known formula"  "000000000000000B" \
     "10 N>N  2 N>N  1 N>N 10 N>N CONS  1 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS CONS  SKNOCK NOUN> ."
 
+# ── Op2 partial eval gap tests ─────────────────────────────────────────────
+# These four tests exercise the four sub-cases of the op2 scan:
+#   (a) NOMM_I2  — formula c not statically known (dynamic slot)
+#   (b) Memo hit — same resolved formula seen twice in one scan
+#   (c) DS2 with non-constant subject formula (nock_ex fallback, no jet)
+#   (d) DS2 with resolved formula containing op7 (deep fresh-scan)
+
+# (a) NOMM_I2 via SKNOCK — c=[0 3] is a dynamic slot; cape is wildcard,
+#     so run_nomm1 takes the q!=NULL branch and calls nock_ex at runtime.
+# *[[42 [4 [0 1]]] [2 [0 2] [0 3]]] = *[42 [4 [0 1]]] = 43
+T "ska op2: I2 fallback via SKNOCK"  "000000000000002B" \
+    "42 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS  2 N>N  0 N>N 2 N>N CONS  0 N>N 3 N>N CONS  CONS CONS  SKNOCK NOUN> ."
+
+# (b) Memo hit — distribution formula [f.f] where f=[2 [0 1] [1 [4 [0 1]]]].
+#     SKA scans the head op2 first (fresh scan → populates g_memo with [4 [0 1]]),
+#     then scans the identical tail op2 (memo hit: same fol, compatible sub-sock).
+# *[5 [[f][f]]] = [*[5 f] *[5 f]] = [6 6]; CAR = 6
+T "ska op2: memo hit via distribution"  "0000000000000006" \
+    "5 N>N  2 N>N  0 N>N 1 N>N CONS  1 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS  CONS CONS  DUP CONS  SKNOCK CAR NOUN> ."
+
+# (c) DS2 with non-constant subject formula — p=[4 [0 1]] (inc) produces a
+#     wildcard sock, so cook_find_jet returns NULL and run_nomm1 falls through
+#     to nock_ex(core, bell.fol, ...) to evaluate the resolved formula.
+# *[5 [2 [4 [0 1]] [1 [4 [0 1]]]]] = *[inc(5) [4 [0 1]]] = *[6 [4 [0 1]]] = 7
+T "ska op2: DS2 inc subject formula"  "0000000000000007" \
+    "5 N>N  2 N>N  4 N>N 0 N>N 1 N>N CONS CONS  1 N>N  4 N>N 0 N>N 1 N>N CONS CONS  CONS CONS CONS  SKNOCK NOUN> ."
+
+# (d) DS2 with resolved formula [7 [4 [0 1]] [4 [0 1]]] (double-inc via op7).
+#     Fresh scan recurses into op7, exercising the full scan path for a complex
+#     resolved formula that is itself not a trivial [0 ax] or [1 val].
+# *[3 [2 [0 1] [1 [7 [4 [0 1]] [4 [0 1]]]]]]
+#   = *[3 [7 [4 [0 1]] [4 [0 1]]]]
+#   = *[*[3 [4 [0 1]]] [4 [0 1]]]
+#   = *[4 [4 [0 1]]] = 5
+T "ska op2: DS2 resolved to op7 (double-inc)"  "0000000000000005" \
+    "3 N>N  2 N>N  0 N>N 1 N>N CONS  1 N>N  7 N>N  4 N>N 0 N>N 1 N>N CONS CONS  4 N>N 0 N>N 1 N>N CONS CONS  CONS  CONS  CONS CONS CONS  SKNOCK NOUN> ."
+
 # Op2 via SKA-EN (NOCK routes through ska_nock)
 # *[42 [2 [0 1] [1 [4 [0 1]]]]] = *[42 [4 [0 1]]] = 43
 T "ska-en op2: known formula via NOCK"  "000000000000002B" \
