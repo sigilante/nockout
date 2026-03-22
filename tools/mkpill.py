@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mkpill.py — build a Fock PILL v2 binary from a jammed kernel gate.
+mkpill.py — build a Trinitite PILL v2 binary from a jammed kernel gate.
 
 Usage:
     python3 tools/mkpill.py -n <decimal-atom> <shape> <output.bin>
@@ -18,25 +18,6 @@ PILL v2 format:
     byte   8:     kernel shape (0=Arvo, 1=Shrine)
     bytes  9-15:  reserved/padding (zeros)
     bytes  16+:   raw jam bytes (little-endian atom, no leading zero bytes)
-
-Building a minimal null kernel in the Dojo:
-    %-  jam
-    =>  ~
-    =<  k
-    |%
-    ++  k
-      |=  *
-      :-  ~
-      k
-    --
-
-    Paste the resulting decimal atom with:
-        python3 tools/mkpill.py -n <atom> arvo kernel.pill
-
-Loading in QEMU (Makefile provides 'make run-kernel'):
-    qemu-system-aarch64 -machine raspi3b -nographic \\
-        -device loader,file=kernel.pill,addr=0x10000000,force-raw=on \\
-        -kernel kernel8.img
 """
 
 import sys

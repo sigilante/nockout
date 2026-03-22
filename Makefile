@@ -43,6 +43,7 @@ $(TARGET).img: $(TARGET).elf
 run: $(TARGET).img
 	qemu-system-aarch64 \
 	  -machine raspi4b \
+	  -m 2G \
 	  -kernel $(TARGET).img \
 	  -display none \
 	  -nographic
@@ -55,6 +56,7 @@ PILL ?= pill.bin
 run-pill: $(TARGET).img
 	qemu-system-aarch64 \
 	  -machine raspi4b \
+	  -m 2G \
 	  -kernel $(TARGET).img \
 	  -device loader,file=$(PILL),addr=0x10000000,force-raw=on \
 	  -display none \
@@ -65,6 +67,7 @@ run-kernel: run-pill
 debug: $(TARGET).img
 	qemu-system-aarch64 \
 	  -machine raspi4b \
+	  -m 2G \
 	  -kernel $(TARGET).img \
 	  -display none \
 	  -nographic \

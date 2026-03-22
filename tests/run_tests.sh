@@ -1219,7 +1219,7 @@ while [[ $bi -lt ${#BEFORE_LINES[@]} ]]; do
 done
 
 RAW=$({ printf '%s\n' "$INPUT"; sleep 5; printf '\001x'; } | \
-    timeout 60 qemu-system-aarch64 -machine raspi4b -kernel kernel8.img \
+    timeout 60 qemu-system-aarch64 -machine raspi4b -m 2G -kernel kernel8.img \
         -display none -nographic || true)
 
 # Extract results from output lines.

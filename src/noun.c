@@ -294,24 +294,27 @@ extern uint8_t _pill_embed_end[];
 
 noun pill_load(void) {
     const uint8_t *base;
+    uint64_t nbytes = 0;
 
     /*
      * Priority 1: QEMU -device loader places pill at PILL_BASE.
-     *   On QEMU without the loader, that region is zeroed → nbytes==0 → skip.
-     * Priority 2: embedded pill baked into the binary (real hardware).
+     *   QEMU raspi4b requires -m 2G; with that, 0x10000000 is accessible RAM.
+     *   Read nbytes; if non-zero, the loader placed a pill there.
+     * Priority 2: pill embedded in the binary via .incbin (real hardware).
+     *   On bare metal the GPU firmware zeroes RAM, so PILL_BASE has nbytes=0.
      */
-    uint64_t nbytes = 0;
     const uint8_t *qbase = (const uint8_t *)PILL_BASE;
+    uint64_t qnbytes = 0;
     for (int i = 0; i < 8; i++)
-        nbytes |= (uint64_t)qbase[i] << (i * 8);
+        qnbytes |= (uint64_t)qbase[i] << (i * 8);
 
-    if (nbytes > 0) {
-        base = qbase;           /* QEMU override */
+    if (qnbytes > 0) {
+        base   = qbase;
+        nbytes = qnbytes;
     } else {
         base = _pill_embed_start;
         if (base >= _pill_embed_end)
             return 0;           /* no embedded pill */
-        nbytes = 0;
         for (int i = 0; i < 8; i++)
             nbytes |= (uint64_t)base[i] << (i * 8);
     }

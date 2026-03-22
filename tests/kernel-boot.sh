@@ -33,7 +33,7 @@ check() {
     if printf '%s' "$out" | grep -q "$pattern"; then
         (( ++PASS ))
         echo -e "${GRN}PASS${NC}  $name"
-        [[ $VERBOSE -eq 1 ]] && printf '%s\n' "$out" | head -8 | sed 's/^/      /'
+        [[ $VERBOSE -eq 1 ]] && printf '%s\n' "$out" | head -8 | sed 's/^/      /' || true
     else
         (( ++FAIL ))
         echo -e "${RED}FAIL${NC}  $name"
@@ -51,7 +51,7 @@ python3 tools/mkpill.py -n 103461740246623566125433280773           arvo   "$TMP
 python3 tools/mkpill.py -n 89337781013                              shrine "$TMPDIR_PILLS/null-shrine.pill"
 python3 tools/mkpill.py -n 13497664181327658059184875019360517      shrine "$TMPDIR_PILLS/hint-shrine.pill"
 
-QEMU="qemu-system-aarch64 -machine raspi4b -display none -nographic"
+QEMU="qemu-system-aarch64 -machine raspi4b -m 2G -display none -nographic"
 IMG="-kernel kernel8.img"
 
 # ── Test helpers ──────────────────────────────────────────────────────────────
@@ -64,8 +64,11 @@ boot_nopill() {
 
 boot_pill() {
     local pill="$1"
-    { sleep 2; printf '\001x'; } | \
-        timeout 6 $QEMU $IMG \
+    { sleep 1
+      printf 'KERNEL\n'
+      sleep 3
+      printf '\001x'
+    } | timeout 8 $QEMU $IMG \
           -device "loader,addr=0x10000000,force-raw=on,file=$pill" \
           || true
 }
@@ -75,11 +78,13 @@ boot_pill() {
 #   uart_recv_noun protocol: 8-byte LE length (=2) then jam bytes
 boot_pill_event42() {
     local pill="$1"
-    { sleep 2
+    { sleep 1
+      printf 'KERNEL\n'
+      sleep 2
       python3 -c "import sys; sys.stdout.buffer.write(bytes([2,0,0,0,0,0,0,0,0x50,0x15]))"
-      sleep 1
+      sleep 2
       printf '\001x'
-    } | timeout 8 $QEMU $IMG \
+    } | timeout 10 $QEMU $IMG \
           -device "loader,addr=0x10000000,force-raw=on,file=$pill" \
           || true
 }
