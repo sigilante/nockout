@@ -341,44 +341,47 @@ has not fired; `find_by_cord` returns NULL; DS2 site falls back to `nock_op9_con
 
 ## Noun Representation
 
-Every noun is a 64-bit word. The top two bits are the tag:
+Every noun is a 64-bit word. The top two bits determine the tag:
 
 ```
 Bits 63:62  tag
-  00  cell            bits 61:0 = 32-bit heap pointer to [head, tail] pair
-                      bits 61:32 = 30 bits reserved (GC metadata, TBD)
-  01  direct atom     bit 63 = 0; bits 62:0 = value  (0 .. 2^63-1)
-  10  indirect atom   bits 61:0 = 62-bit BLAKE3 hash of limb data (identity IS the hash)
-  11  content atom    bits 61:0  = 62-bit BLAKE3 prefix (identity IS the hash)
-                      actual limb data lives in the atom store (RAM cache / SD card)
+  00  cell          bits 61:0 = 32-bit heap pointer to [head, tail] pair
+                    bits 61:32 = 30 bits reserved (GC metadata, TBD)
+  01  direct atom   bit 63 = 0; bits 62:0 = value  (0 .. 2^63-1)
+  10  indirect atom bits 61:0 = 62-bit BLAKE3 hash of limb data (identity IS the hash)
+  11  cell          (same as 00 — bit 63 = 1, bit 62 = 1 only occurs for cells)
 ```
 
-Heap struct for type-10 (indirect) atoms:
+**Note:** Only three tags are in use. The encoding is: bit 63 = 0 → direct atom; bits
+63:62 = 10 → indirect atom; bits 63:62 = 11 → cell. There is no fourth "content atom"
+type in the current implementation. Phase 12 (large atom cold store) will not require a
+new tag — it reuses indirect (tag 10) with the atom store backed by SD card block I/O.
+
+Heap struct for indirect atoms (tag 10):
 ```c
 struct atom {
     uint64_t  size;      // number of 64-bit limbs
-    uint32_t  blake3[8]; // full 256-bit BLAKE3 hash (all-zero = not yet computed)
+    uint32_t  blake3[8]; // full 256-bit BLAKE3 hash (computed at alloc time)
     uint64_t  limbs[];   // little-endian limb data
 };
 ```
 
 Tag constants (defined in `src/noun.h`):
 ```c
-#define TAG_CELL     (0ULL << 62)
-#define TAG_DIRECT   (1ULL << 62)
 #define TAG_INDIRECT (2ULL << 62)
-#define TAG_CONTENT  (3ULL << 62)
+#define TAG_CELL     (3ULL << 62)
 #define TAG_MASK     (3ULL << 62)
 ```
 
 Notes:
-Direct atom boundary: direct atoms cover all values up to ~9.2×10^18 (2^63-1).
-- Type-11 (content atom) is reserved for Phase 4b; stubs only in Phase 2.
-- The 30-bit hash prefix in type-10 words is the low 30 bits of the full BLAKE3 hash,
-  written once when `hash_atom()` is first called on that atom.
-- For large atoms (4GB+) that cannot be RAM-resident, type-11 content addressing is
-  the correct representation. The atom store hot cache maps 62-bit hash → atom struct;
-  the cold store (Phase 7) backs this with SD card block I/O.
+- Direct atom boundary: covers 0 .. 2^63-1 (~9.2×10^18).
+- Indirect atoms are **content-addressed**: the 62-bit BLAKE3 hash IS the noun identity.
+  `noun_eq` for indirect atoms is integer equality on the noun word — no content scan.
+  The full 256-bit hash + limb data live in the atom store, keyed by the 62-bit prefix.
+- The BLAKE3 hash is computed eagerly at atom creation time inside `make_atom()`.
+- Phase 12 (large atom cold store): same tag-10 representation, but the atom store's
+  backing storage extends to SD card for atoms too large to be RAM-resident. The noun
+  word is unchanged; a cache-miss triggers block I/O to retrieve the limbs.
 
 ## Subject Knowledge Analysis (Phase 8)
 
@@ -497,7 +500,7 @@ core = run_nomm1(subject, c_nomm1, ...)  // %ds2 already resolved to jet_fn_t
 | Decision | Choice | Rationale |
 |---|---|---|
 | UART driver | PL011 at 0x3F201000 | QEMU raspi4b emulates PL011, not mini-UART |
-| Atom tag scheme | bit 63 = 0 → direct; tag 10 → indirect; tag 11 → cell | Direct atoms are raw integers; simplifies arithmetic |
+| Atom tag scheme | bit 63 = 0 → direct; bits 63:62 = 10 → indirect; bits 63:62 = 11 → cell | Direct atoms are raw integers; only 3 tags needed; no separate content-atom tag |
 | Large atom identity | BLAKE3 content hash (62 bits) | O(1) equality, structural sharing, SD-card backing for 4GB+ atoms |
 | Memory model | Arena + refcount heap | No stop-world GC; event arena reset after each +poke |
 | Jets | `%wild` + SKA, hot state in C binary | Stateless registration; no cold-state accumulation; `%fast` intentionally NOT implemented |
