@@ -587,6 +587,10 @@ that dependency is resolved.
 
 RPi 3 and RPi 4 are both supported. QEMU raspi4b is the CI target.
 
+## Phase 13 — Benchmarking
+
+Use the benchmarks at https://github.com/urbit/benchmark to assess on-metal and QEMU performance with and without jets.
+
 ---
 
 # Cached Reasoning
